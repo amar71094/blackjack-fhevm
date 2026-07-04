@@ -13,6 +13,16 @@ export enum GamePhase {
   Completed
 }
 
+export enum PendingKind {
+  None,
+  DealHand,
+  Hit,
+  Stand,
+  DoubleDown,
+  DealerPlay,
+  Settle
+}
+
 export enum ContractOutcome {
   Lose,
   Win,
@@ -20,26 +30,18 @@ export enum ContractOutcome {
   Blackjack
 }
 
-export interface ContractCard {
-  rank: number;
-  suit: number;
-}
-
-export interface ContractPlayer {
+export interface ContractPlayPlayer {
   addr: `0x${string}`;
   chips: bigint;
   bet: bigint;
-  cards: ContractCard[];
-  encRanks: string[];
-  encSuits: string[];
+  cardCount: number;
   isActive: boolean;
   hasActed: boolean;
+  busted: boolean;
 }
 
-export interface ContractDealer {
-  cards: ContractCard[];
-  encRanks: string[];
-  encSuits: string[];
+export interface ContractPlayDealer {
+  cardCount: number;
   hasFinished: boolean;
 }
 
@@ -49,34 +51,31 @@ export interface ContractPlayerResult {
   total: bigint;
   outcome: ContractOutcome | number;
   payout: bigint;
-  cards: ContractCard[];
 }
 
 export interface ContractHandResult {
-  dealerCards: ContractCard[];
   dealerTotal: bigint;
   dealerBusted: boolean;
   results: ContractPlayerResult[];
-  dealerEncRanks: string[];
-  dealerEncSuits: string[];
   pot: bigint;
   timestamp: bigint;
 }
 
+/** Privacy-safe live table state (no card values on-chain). */
 export interface ContractTable {
   id: bigint;
   status: TableStatus;
   minBuyIn: bigint;
   maxBuyIn: bigint;
-  deck: number[];
+  deckCommitment: `0x${string}`;
   deckIndex: number;
   phase: GamePhase;
-  players: ContractPlayer[];
-  dealer: ContractDealer;
+  players: ContractPlayPlayer[];
+  dealer: ContractPlayDealer;
   lastActivityTimestamp: bigint;
+  pendingKind: PendingKind | number;
+  pendingPlayer: `0x${string}`;
   lastHandResult: ContractHandResult;
-  hasPendingResult: boolean;
-  nextHandUnlockTime: bigint;
 }
 
 export interface WinnerEventPayload {

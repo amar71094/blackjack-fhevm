@@ -80,7 +80,7 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
       name: connector.name,
       ready: connector.ready
     }));
-    console.info('[WalletControls] available connectors', entries);
+    if (import.meta.env.DEV) console.info('[WalletControls] available connectors', entries);
   }, [connectorMap]);
 
   const orderedConnectors = useMemo(() => {

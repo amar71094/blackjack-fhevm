@@ -28,6 +28,7 @@ interface PlayControlPanelProps {
   availableChips?: string;
   minBet?: string;
   status: ControlStatus;
+  helperMessage?: string;
   className?: string;
 }
 
@@ -58,6 +59,7 @@ export const PlayControlPanel = ({
   availableChips,
   minBet,
   status,
+  helperMessage,
   className
 }: PlayControlPanelProps) => {
   const bettingLocked = disableActions || isPending || !isSeated || gamePhase !== 'betting';
@@ -182,7 +184,12 @@ export const PlayControlPanel = ({
           Take a seat and place a buy-in to unlock betting.
         </p>
       )}
-      {bettingLocked && isSeated && gamePhase !== 'betting' && (
+      {helperMessage && (
+        <p className="mt-2 text-[0.56rem] uppercase tracking-[0.34em] text-amber-200/85">
+          {helperMessage}
+        </p>
+      )}
+      {!helperMessage && bettingLocked && isSeated && gamePhase !== 'betting' && (
         <p className="mt-2 text-[0.56rem] uppercase tracking-[0.34em] text-white/55">
           Betting opens at the start of the next hand.
         </p>

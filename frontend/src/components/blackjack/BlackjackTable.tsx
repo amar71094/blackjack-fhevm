@@ -8,7 +8,7 @@ import { useBlackjackGame } from '@/hooks/useBlackjackGame';
 import { cn } from '@/lib/utils';
 import feltTexture from '@/assets/poker-table-felt.jpg';
 import { SiteHeader } from '@/components/layout/SiteHeader';
-import { formatChips } from '@/utils/contractMapping';
+import { calculateHandValue, formatChips, hasRevealedCards, toHiddenCard } from '@/utils/contractMapping';
 import { parseEther } from 'viem';
 import { toast } from '@/lib/toast';
 import { PlayControlPanel } from './PlayControlPanel';
@@ -73,8 +73,11 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     hasClaimedFreeChips,
     isSeated,
     isPlayerTurn,
+    oraclePending,
+    oracleConfirmingBust,
+    tableStuck,
     isLoading,
-  awaitingNextHand,
+    awaitingNextHand,
   showdownResult,
   lastHandSummary,
   playerTableId,
@@ -82,7 +85,10 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   pendingAction,
   playerDecryptState,
   dealerDecryptState,
-  connectedDecryptedHand
+  dealerRevealTimestamp,
+  connectedDecryptedHand,
+  dealerPublicHand,
+  dealerHandForLastResult
   } = useBlackjackGame({ tableId });
 
   const [showLastResult, setShowLastResult] = useState(false);
@@ -116,12 +122,55 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   }, [showLastResult, lastHandSummary, awaitingNextHand, showdownResult]);
 
   // When a showdown snapshot exists reuse it so the post-hand overlay stays stable.
+  const connectedAddressLower = useMemo(() => toLowerSafe(connectedPlayer?.address), [connectedPlayer?.address]);
+
   const players = useMemo(() => {
-    if (activeSummary) {
-      return activeSummary.players.map(({ player }) => player);
+    const basePlayers = gameState?.players ?? [];
+    if (!activeSummary) {
+      return basePlayers;
     }
-    return gameState?.players ?? [];
-  }, [activeSummary, gameState?.players]);
+
+    const summaryLookup = new Map<string, typeof activeSummary.players[number]['player']>();
+    activeSummary.players.forEach(({ player }) => {
+      const key = toLowerSafe(player.address);
+      if (key) summaryLookup.set(key, player);
+    });
+
+    return basePlayers.map((player) => {
+      const key = toLowerSafe(player.address);
+      if (!key) return player;
+      const summaryPlayer = summaryLookup.get(key);
+      if (!summaryPlayer) return player;
+
+      const isViewer = Boolean(connectedAddressLower && key === connectedAddressLower);
+      if (isViewer) {
+        return {
+          ...player,
+          bet: summaryPlayer.bet,
+          chips: summaryPlayer.chips,
+          blackjack: summaryPlayer.blackjack,
+          bust: summaryPlayer.bust,
+          result: summaryPlayer.result,
+          displayTotal: player.displayTotal ?? summaryPlayer.displayTotal,
+          cardsRevealed: player.cardsRevealed || (player.displayHand?.length ?? 0) > 0
+        };
+      }
+
+      const hiddenHand = summaryPlayer.hand.map((_, index) => toHiddenCard(index, `${player.id}-summary`));
+      return {
+        ...player,
+        bet: summaryPlayer.bet,
+        chips: summaryPlayer.chips,
+        blackjack: summaryPlayer.blackjack,
+        bust: summaryPlayer.bust,
+        result: null,
+        hand: hiddenHand,
+        displayHand: hiddenHand,
+        displayTotal: null,
+        cardsRevealed: false
+      };
+    });
+  }, [activeSummary, connectedAddressLower, gameState?.players]);
 
   // Extract the address list according to the same precedence (snapshot > live state).
   const winnersList = useMemo(() => {
@@ -149,6 +198,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   const connectedCanAct = Boolean(
     connectedPlayer &&
       isPlayerTurn &&
+      !oraclePending &&
       gameState?.phase === 'player-turn' &&
       !connectedPlayer.bust &&
       connectedPlayer.hand.length > 0
@@ -161,7 +211,9 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       connectedPlayer.chips >= connectedPlayer.bet
   );
 
-  const shouldShowCards = Boolean(gameState?.roundActive || gameState?.phase === 'showdown' || activeSummary);
+  const shouldShowCards = Boolean(
+    gameState?.roundActive || gameState?.phase === 'showdown' || activeSummary || awaitingNextHand
+  );
   const roundActiveDisplay = Boolean(gameState?.roundActive || activeSummary);
   const isShowdownPhase = gameState?.phase === 'showdown';
 
@@ -174,9 +226,11 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   const activePlayerName = useMemo(() => {
     if (awaitingNextHand) return '—';
     if (!gameState) return '—';
-    const idx = gameState.activePlayerIndex ?? 0;
+    if (oracleConfirmingBust) return 'Confirming bust';
+    const idx = gameState.activePlayerIndex ?? -1;
+    if (idx < 0) return '—';
     return gameState.players?.[idx]?.name ?? '—';
-  }, [awaitingNextHand, gameState]);
+  }, [awaitingNextHand, gameState, oracleConfirmingBust]);
 
   const disableActions = pendingAction !== null || isLoading || awaitingNextHand;
   const minBuyInDisplay = formatChips(minBuyIn);
@@ -184,7 +238,34 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   const potDisplay = formatChips(potAmount);
 
   // Dealer & winners overlay reference either the persisted snapshot or the live state.
-  const overlayDealer = activeSummary ? activeSummary.dealer : gameState?.dealer;
+  const activeSummaryTimestamp = activeSummary?.handTimestamp ?? 0;
+  const overlayDealer = useMemo(() => {
+    if (!activeSummary) {
+      return gameState?.dealer;
+    }
+    const summaryDealer = activeSummary.dealer;
+    const revealedDealer =
+      dealerHandForLastResult &&
+      activeSummary.handTimestamp === lastHandSummary?.handTimestamp
+        ? dealerHandForLastResult
+        : null;
+    if (revealedDealer && hasRevealedCards(revealedDealer.cards)) {
+      const resolvedTotal =
+        revealedDealer.total > 0
+          ? revealedDealer.total
+          : calculateHandValue(revealedDealer.cards);
+      return {
+        ...summaryDealer,
+        hand: revealedDealer.cards,
+        displayHand: revealedDealer.cards,
+        displayTotal: resolvedTotal,
+        handValue: resolvedTotal,
+        cardsRevealed: true,
+        bust: resolvedTotal > 21 || summaryDealer.bust
+      };
+    }
+    return summaryDealer;
+  }, [activeSummary, gameState?.dealer, dealerHandForLastResult, lastHandSummary?.handTimestamp]);
   const overlayDealerWins = activeSummary ? activeSummary.dealerWins : dealerWins;
   const overlayWinnerNames = activeSummary
     ? activeSummary.winners.map((entry) => entry.player.name)
@@ -355,10 +436,51 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
 
   const actionStatus = useMemo(() => {
     if (awaitingNextHand) return { label: 'Awaiting Next Deal', variant: 'waiting' as const };
+    if (oracleConfirmingBust && connectedPlayer?.bust) {
+      return { label: 'Bust Confirmed', variant: 'waiting' as const };
+    }
     if (connectedCanAct) return { label: 'Your Move', variant: 'active' as const };
+    if (oraclePending) {
+      return {
+        label: oracleConfirmingBust ? 'Confirming Bust' : 'Oracle Processing',
+        variant: 'waiting' as const
+      };
+    }
+    if (tableStuck) return { label: 'Starting Dealer Turn', variant: 'waiting' as const };
+    if (gameState?.phase === 'player-turn' && isSeated && !isPlayerTurn) {
+      return { label: 'Not Your Turn', variant: 'idle' as const };
+    }
     if (disableActions) return { label: 'Locked', variant: 'locked' as const };
     return { label: 'Standing By', variant: 'idle' as const };
-  }, [awaitingNextHand, connectedCanAct, disableActions]);
+  }, [
+    awaitingNextHand,
+    connectedCanAct,
+    oraclePending,
+    oracleConfirmingBust,
+    tableStuck,
+    gameState?.phase,
+    isSeated,
+    isPlayerTurn,
+    disableActions
+  ]);
+
+  const controlHelperMessage = useMemo(() => {
+    if (oraclePending) {
+      return oracleConfirmingBust
+        ? 'The oracle is confirming the bust on-chain. The next player can act once this finishes.'
+        : 'The game oracle is fulfilling your last action. Hit, stand, and double unlock when processing finishes.';
+    }
+    if (tableStuck) {
+      return 'All players have finished. The dealer step should begin automatically — use Force only if the table stays idle for over a minute.';
+    }
+    if (connectedPlayer?.bust) {
+      return 'You busted. The table advances automatically — no action needed.';
+    }
+    if (gameState?.phase === 'player-turn' && isSeated && !isPlayerTurn && !connectedPlayer?.bust) {
+      return 'Wait for the active player to finish their turn.';
+    }
+    return undefined;
+  }, [oraclePending, oracleConfirmingBust, tableStuck, gameState?.phase, isSeated, isPlayerTurn, connectedPlayer?.bust]);
 
   const playControlPanelProps = {
     betInput,
@@ -376,7 +498,8 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     isPending: pendingAction !== null,
     availableChips: availableChipsDisplay,
     minBet: minBuyInDisplay,
-    status: actionStatus
+    status: actionStatus,
+    helperMessage: controlHelperMessage
   } as const;
 
   return (
@@ -442,7 +565,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                         blackjack: false
                       }
                     }
-                    hideSecondCard={!gameState?.dealer.cardsRevealed && !activeSummary}
+                    hideSecondCard={!overlayDealer?.cardsRevealed}
                     dealerWins={overlayDealerWins}
                     potAmount={potAmount}
                     awaitingReveal={gameState?.phase === 'dealer-turn' && !gameState?.dealer.cardsRevealed}
@@ -471,6 +594,20 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                 </div>
 
                 <div className="relative mt-2 rounded-3xl border border-white/5 bg-black/28 px-4 pb-5 pt-5 backdrop-blur sm:px-6">
+                  {gameState?.phase === 'player-turn' && players.length > 0 && (
+                    <div className="mb-4 flex justify-center">
+                      <div
+                        className={cn(
+                          'rounded-full px-4 py-1 text-xs font-semibold uppercase tracking-[0.4em] shadow',
+                          connectedCanAct
+                            ? 'bg-emerald-400/90 text-emerald-950'
+                            : 'bg-primary/80 text-primary-foreground'
+                        )}
+                      >
+                        {connectedCanAct ? 'Your Turn' : `${activePlayerName} Acting`}
+                      </div>
+                    </div>
+                  )}
                   <div
                     className={cn(
                       'grid gap-4 sm:gap-5',
@@ -493,7 +630,11 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                         <div key={player.id} className="flex justify-center">
                           <PlayerSpot
                             player={player}
-                            isActive={gameState?.phase === 'player-turn' && index === (gameState?.activePlayerIndex ?? 0)}
+                            isActive={
+                              gameState?.phase === 'player-turn' &&
+                              (gameState?.activePlayerIndex ?? -1) === index &&
+                              (gameState?.activePlayerIndex ?? -1) >= 0
+                            }
                             showCards={shouldShowCards || player.cardsRevealed}
                             phase={gameState?.phase ?? 'waiting'}
                             roundActive={roundActiveDisplay}

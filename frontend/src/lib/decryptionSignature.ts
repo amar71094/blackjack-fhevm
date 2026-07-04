@@ -14,6 +14,7 @@ export type StoredDecryptionSignature = {
 
 const STORAGE_PREFIX = 'fhevm-blackjack-signature';
 const ONE_DAY_SECONDS = 24 * 60 * 60;
+const DEFAULT_DURATION_DAYS = 1;
 
 const memoryStore = new Map<string, string>();
 
@@ -33,8 +34,8 @@ const sanitizeTypes = (
 };
 
 const resolveStorage = (): StorageProvider => {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    return window.localStorage;
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    return window.sessionStorage;
   }
   return {
     getItem: (key) => memoryStore.get(key) ?? null,
@@ -131,7 +132,7 @@ export const loadOrCreateSignature = async (
 
   const { publicKey, privateKey } = instance.generateKeypair();
   const startTimestamp = Math.floor(Date.now() / 1000);
-  const durationDays = 365;
+  const durationDays = DEFAULT_DURATION_DAYS;
   const contractAddresses = [contractAddress];
 
   const eip712 = instance.createEIP712(publicKey, contractAddresses, startTimestamp, durationDays);

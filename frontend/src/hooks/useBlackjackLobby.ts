@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi';
+import { useAccount, usePublicClient, useReadContract, useWalletClient } from 'wagmi';
 import { toast } from '@/lib/toast';
 import { blackjackContract } from '@/lib/contracts';
-import { blackjackAbi } from '@/lib/blackjackAbi';
-import { normalizeTable, toUiGameState } from '@/utils/contractMapping';
-import { TableStatus } from '@/types/blackjackContract';
+import { TableStatus, GamePhase } from '@/types/blackjackContract';
+import { devError, devLog } from '@/lib/devLog';
+import { friendlyRevertMessage, writeBlackjackContract } from '@/lib/contractWrite';
 
 export interface LobbyTable {
   id: bigint;
@@ -30,57 +30,71 @@ export interface BlackjackLobbyData {
     joinTable: (tableId: bigint, buyIn: bigint) => Promise<boolean>;
     leaveCurrentTable: () => Promise<boolean>;
     claimFreeChips: () => Promise<boolean>;
+    buyChips: (weiAmount: bigint) => Promise<boolean>;
+    withdrawChips: (chipAmount: bigint) => Promise<boolean>;
   };
 }
 
 const MAX_PLAYERS = 4;
 const LOBBY_POLL_INTERVAL = 45_000;
 
-const logInfo = (...args: unknown[]) => console.info('[BlackjackLobby]', ...args);
-const logError = (...args: unknown[]) => console.error('[BlackjackLobby]', ...args);
+const phaseLabels: Record<GamePhase, string> = {
+  [GamePhase.WaitingForPlayers]: 'betting',
+  [GamePhase.Dealing]: 'dealing',
+  [GamePhase.PlayerTurns]: 'player-turn',
+  [GamePhase.DealerTurn]: 'dealer-turn',
+  [GamePhase.Showdown]: 'showdown',
+  [GamePhase.Completed]: 'waiting'
+};
+
+const toNumber = (value: unknown) => Number(value ?? 0);
+const toBigInt = (value: unknown) => (typeof value === 'bigint' ? value : BigInt(value ?? 0));
 
 // Orchestrates lobby reads (table list + player's seat) and exposes lightweight actions.
 export const useBlackjackLobby = (): BlackjackLobbyData => {
   const { address } = useAccount();
   const publicClient = usePublicClient();
+  const { data: walletClient } = useWalletClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const { writeContractAsync, isPending } = useWriteContract();
+  const [isWriting, setIsWriting] = useState(false);
 
   const {
-    data: rawTables,
+    data: rawSummaries,
     refetch,
     isFetching
   } = useReadContract({
     ...blackjackContract,
-    functionName: 'getAllTables',
+    functionName: 'getAllTableSummaries',
     query: {
       enabled: Boolean(blackjackContract.address),
       refetchInterval: LOBBY_POLL_INTERVAL,
-      onSuccess: (data) => logInfo('getAllTables success', data),
-      onError: (err) => logError('getAllTables error', err)
+      onSuccess: (data) => devLog('[BlackjackLobby] getAllTableSummaries success', data),
+      onError: (err) => devError('[BlackjackLobby] getAllTableSummaries error', err)
     }
   });
 
-  // Map the raw contract structs to a UI-friendly snapshot that is cheap to render.
   const tables = useMemo(() => {
-    if (!rawTables) return [];
-    return (rawTables as unknown[]).map((table) => {
-      const normalized = normalizeTable(table);
-      const ui = toUiGameState(normalized);
+    if (!rawSummaries) return [];
+    return (rawSummaries as unknown[]).map((entry) => {
+      const record = entry as Record<string, unknown>;
+      const phase = toNumber(record.phase) as GamePhase;
       return {
-        id: normalized.id,
-        status: normalized.status,
-        minBuyIn: ui.minBuyIn,
-        maxBuyIn: ui.maxBuyIn,
-        pot: ui.pot,
-        phase: ui.phase,
-        playersSeated: ui.players.length,
+        id: toBigInt(record.id),
+        status: toNumber(record.status) as TableStatus,
+        minBuyIn: toNumber(record.minBuyIn),
+        maxBuyIn: toNumber(record.maxBuyIn),
+        pot: toNumber(record.pot),
+        phase: phaseLabels[phase] ?? 'waiting',
+        playersSeated: toNumber(record.playersSeated),
         playerCapacity: MAX_PLAYERS
       } satisfies LobbyTable;
     });
-  }, [rawTables]);
+  }, [rawSummaries]);
 
-  const { data: playerTableId } = useReadContract({
+  const {
+    data: playerTableId,
+    refetch: refetchPlayerTable
+  } = useReadContract({
     ...blackjackContract,
     functionName: 'playerTableId',
     args: address ? [address] as const : undefined,
@@ -90,7 +104,10 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     }
   });
 
-  const { data: walletChips } = useReadContract({
+  const {
+    data: walletChips,
+    refetch: refetchWalletChips
+  } = useReadContract({
     ...blackjackContract,
     functionName: 'playerChips',
     args: address ? [address] as const : undefined,
@@ -100,7 +117,10 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     }
   });
 
-  const { data: hasClaimedFreeChips } = useReadContract({
+  const {
+    data: hasClaimedFreeChips,
+    refetch: refetchClaimStatus
+  } = useReadContract({
     ...blackjackContract,
     functionName: 'hasClaimedFreeChips',
     args: address ? [address] as const : undefined,
@@ -110,7 +130,6 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     }
   });
 
-  // Helper to wait for confirmations from any of the lobby write transactions.
   const waitForReceipt = useCallback(
     async (hash: `0x${string}`) => {
       if (!publicClient) return;
@@ -119,7 +138,6 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     [publicClient]
   );
 
-  // Early exit helpers so every action surfaces consistent wallet/contract errors.
   const requireWallet = useCallback(() => {
     if (!address) {
       toast.error('Connect your wallet to continue.');
@@ -132,9 +150,27 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     return true;
   }, [address]);
 
-  type LobbyFunction = 'createTable' | 'joinTable' | 'leaveTable' | 'claimFreeChips';
+  type LobbyFunction =
+    | 'createTable'
+    | 'joinTable'
+    | 'leaveTable'
+    | 'claimFreeChips'
+    | 'buyChips'
+    | 'withdrawChips';
 
-  // Shared write helper so create/join/leave reuse the same pending + toast flow.
+  const refreshAfterWrite = useCallback(async () => {
+    const tasks: Promise<unknown>[] = [refetch()];
+    if (refetchPlayerTable) tasks.push(refetchPlayerTable());
+    if (refetchWalletChips) tasks.push(refetchWalletChips());
+    if (refetchClaimStatus) tasks.push(refetchClaimStatus());
+    await Promise.allSettled(tasks);
+  }, [
+    refetch,
+    refetchClaimStatus,
+    refetchPlayerTable,
+    refetchWalletChips
+  ]);
+
   const execute = useCallback(
     async (
       functionName: LobbyFunction,
@@ -143,41 +179,49 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
       successMessage?: string
     ): Promise<boolean> => {
       if (!requireWallet()) return false;
+      if (!publicClient || !walletClient) {
+        toast.error('Wallet client is not ready — reconnect your wallet and retry.');
+        return false;
+      }
       try {
         setPendingAction(functionName);
-        logInfo('writeContract start', { functionName, args, value });
-        const hash = await writeContractAsync({
-          address: blackjackContract.address!,
-          abi: blackjackAbi,
+        setIsWriting(true);
+        devLog('[BlackjackLobby] writeContract start', { functionName, args, value });
+        const hash = await writeBlackjackContract({
+          publicClient,
+          walletClient,
+          contractAddress: blackjackContract.address!,
           functionName,
-          args,
+          args: args as never,
           value
         });
         toast.message('Transaction submitted', { description: hash });
-        logInfo('writeContract submitted', { functionName, hash });
+        devLog('[BlackjackLobby] writeContract submitted', { functionName, hash });
         await waitForReceipt(hash);
-        logInfo('writeContract confirmed', { functionName, hash });
+        devLog('[BlackjackLobby] writeContract confirmed', { functionName, hash });
         if (successMessage) {
           toast.success(successMessage);
         }
-        await refetch();
+        await refreshAfterWrite();
         return true;
       } catch (error) {
-        logError('writeContract error', { functionName, error });
-        const description =
+        devError('[BlackjackLobby] writeContract error', { functionName, error });
+        const friendly = friendlyRevertMessage(error);
+        const description = friendly ?? (
           (error as { shortMessage?: string })?.shortMessage ||
           (error as Error)?.message ||
-          'Unknown error';
+          'Unknown error'
+        );
         toast.error(`Failed to execute ${functionName}`, { description });
         return false;
       } finally {
         setPendingAction(null);
+        setIsWriting(false);
       }
     },
-    [refetch, requireWallet, waitForReceipt, writeContractAsync]
+    [publicClient, refreshAfterWrite, requireWallet, waitForReceipt, walletClient]
   );
 
-  // Public lobby actions – each validates inputs before delegating to the shared executor.
   const actions = useMemo(
     () => ({
       createTable: async (minBuyIn: bigint, maxBuyIn: bigint) => {
@@ -200,6 +244,30 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
           toast.error('Buy-in must be greater than zero.');
           return false;
         }
+        const targetTable = tables.find((table) => table.id === tableId);
+        if (targetTable) {
+          if (buyIn < BigInt(targetTable.minBuyIn) || buyIn > BigInt(targetTable.maxBuyIn)) {
+            toast.error(`Buy-in must be between ${targetTable.minBuyIn} and ${targetTable.maxBuyIn} chips.`);
+            return false;
+          }
+          if (targetTable.playersSeated >= targetTable.playerCapacity) {
+            toast.error('This table is full.');
+            return false;
+          }
+        }
+        const walletBalance = walletChips as bigint | undefined;
+        if (walletBalance === undefined) {
+          toast.error('Wallet chip balance is still loading — try again in a moment.');
+          return false;
+        }
+        if (walletBalance < buyIn) {
+          toast.error('Not enough chips in your wallet. Claim free chips or buy more first.');
+          return false;
+        }
+        if (playerTableId && playerTableId !== 0n) {
+          toast.error('Leave your current table before joining another.');
+          return false;
+        }
         return execute('joinTable', [tableId, buyIn] as const, undefined, 'Joined table');
       },
       leaveCurrentTable: async () => {
@@ -215,14 +283,46 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
           return false;
         }
         return execute('claimFreeChips', [], undefined, 'Free chips claimed');
+      },
+      buyChips: async (weiAmount: bigint) => {
+        if (weiAmount <= 0n) {
+          toast.error('Send a positive ETH amount.');
+          return false;
+        }
+        if (playerTableId && playerTableId !== 0n) {
+          toast.error('Leave your current table or cash out before buying chips.');
+          return false;
+        }
+        return execute('buyChips', [] as const, weiAmount, 'Chips purchased');
+      },
+      withdrawChips: async (chipAmount: bigint) => {
+        if (chipAmount <= 0n) {
+          toast.error('Enter a withdraw amount greater than zero.');
+          return false;
+        }
+        if (playerTableId && playerTableId !== 0n) {
+          toast.error('Leave your current table or cash out before withdrawing.');
+          return false;
+        }
+        const walletBalance = walletChips as bigint | undefined;
+        if (walletBalance !== undefined && chipAmount > walletBalance) {
+          toast.error('Not enough chips in your wallet.');
+          return false;
+        }
+        return execute(
+          'withdrawChips',
+          [chipAmount] as const,
+          undefined,
+          `Withdrew ${chipAmount.toString()} chips`
+        );
       }
     }),
-    [execute, playerTableId, hasClaimedFreeChips]
+    [execute, hasClaimedFreeChips, playerTableId, tables, walletChips]
   );
 
   return {
     tables,
-    isLoading: isFetching || isPending,
+    isLoading: isFetching || isWriting,
     pendingAction,
     refetchTables: refetch,
     playerTableId: playerTableId as bigint | undefined,

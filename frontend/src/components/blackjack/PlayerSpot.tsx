@@ -1,6 +1,6 @@
 import { Player } from '@/types/blackjack';
 import { Card } from './Card';
-import { calculateHandValue, toHiddenCard } from '@/utils/contractMapping';
+import { calculateHandValue, resolvePlayerBust, toHiddenCard } from '@/utils/contractMapping';
 import playerAvatar from '@/assets/player-ghost.png';
 import { cn } from '@/lib/utils';
 import { ChipStack, ChipMotion } from './ChipStack';
@@ -84,6 +84,7 @@ export const PlayerSpot = ({
   const revealedTotal = renderedCardsRevealed
     ? renderedTotal ?? calculateHandValue(renderedHand)
     : null;
+  const isBusted = resolvePlayerBust(player, revealedTotal);
   const totalDisplay = revealedTotal ?? '??';
   const resultInfo = renderedCardsRevealed && player.result ? resultStyles[player.result] : null;
   const showDecryptNotice =
@@ -104,6 +105,9 @@ export const PlayerSpot = ({
     chipMotion = isWinner ? 'return' : dealerWins ? 'idle' : 'idle';
   }
 
+  const showTurnBanner = Boolean(isActive && phase === 'player-turn' && !isBusted);
+  const turnLabel = isConnected ? 'Your Turn' : 'Playing';
+
   return (
     <div
       className={cn(
@@ -111,10 +115,17 @@ export const PlayerSpot = ({
         isActive && 'border-primary/70 shadow-primary/40 scale-[1.03]'
       )}
     >
+      {showTurnBanner && (
+        <div className="absolute -top-4 left-1/2 z-10 -translate-x-1/2">
+          <div className="rounded-full bg-gradient-to-r from-amber-300 via-primary to-amber-400 px-4 py-1 text-[0.55rem] font-bold uppercase tracking-[0.35em] text-slate-950 shadow-lg">
+            {turnLabel}
+          </div>
+        </div>
+      )}
       <div className="flex w-full items-center justify-between gap-3">
         <div className={cn(
           'relative h-16 w-16 overflow-hidden rounded-full border-4 border-primary/40 bg-background/40 shadow-inner',
-          player.bust && 'opacity-60'
+          isBusted && 'opacity-60'
         )}>
           <img
             src={playerAvatar}
@@ -164,7 +175,7 @@ export const PlayerSpot = ({
            className={cn(
              'rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.35em] shadow',
              renderedCardsRevealed
-               ? player.bust
+               ? isBusted
                  ? 'bg-rose-600/90 text-rose-50'
                  : player.blackjack
                    ? 'bg-emerald-500/90 text-emerald-50'
@@ -173,12 +184,18 @@ export const PlayerSpot = ({
            )}
          >
            {renderedCardsRevealed
-             ? player.bust
+             ? isBusted
                ? `Bust! (${totalDisplay})`
                : `Total ${totalDisplay}`
              : 'Encrypted Hand'}
          </div>
        </div>
+      )}
+
+      {!renderedCardsRevealed && isBusted && (
+        <div className="rounded-full border border-rose-400/40 bg-rose-600/80 px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.32em] text-rose-50">
+          Bust!
+        </div>
       )}
 
       {showDecryptNotice && decryptText && (
@@ -199,16 +216,16 @@ export const PlayerSpot = ({
         </div>
       )}
 
-      {renderedCardsRevealed && (player.bust || resultInfo) && (
+      {renderedCardsRevealed && (isBusted || resultInfo) && (
         <div
           className={cn(
             'absolute -top-3 left-1/2 -translate-x-1/2 rounded-full px-4 py-1 text-xs font-semibold uppercase tracking-widest shadow-lg',
-            player.bust
+            isBusted
               ? 'bg-rose-600/95 text-rose-50'
               : resultInfo?.className
           )}
         >
-          {player.bust ? 'Bust!' : resultInfo?.label}
+          {isBusted ? 'Bust!' : resultInfo?.label}
         </div>
       )}
     </div>

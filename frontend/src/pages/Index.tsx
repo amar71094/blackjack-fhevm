@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, ShieldCheck, Zap, Cpu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,9 @@ import { formatChips } from '@/utils/contractMapping';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { SiteFooter } from '@/components/layout/SiteFooter';
+import { BankHealthBanner } from '@/components/blackjack/BankHealthBanner';
 import { useAccount } from 'wagmi';
+import { parseEther } from 'viem';
 
 const MAX_PLAYERS = 4;
 
@@ -30,6 +32,17 @@ const parseChipAmount = (value: string): bigint | null => {
     if (!normalized) return null;
     const big = BigInt(normalized);
     return big > 0n ? big : null;
+  } catch {
+    return null;
+  }
+};
+
+const parseEthAmount = (value: string): bigint | null => {
+  try {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const wei = parseEther(normalized as `${number}`);
+    return wei > 0n ? wei : null;
   } catch {
     return null;
   }
@@ -97,15 +110,44 @@ const Index = () => {
 
   const walletBalanceDisplay = useMemo(() => formatChips(walletChips ?? 0n), [walletChips]);
   const claimFreeChipsAction = actions.claimFreeChips;
+  const buyChipsAction = actions.buyChips;
+  const withdrawChipsAction = actions.withdrawChips;
+
+  const handleBuyChips = useCallback(async (ethAmount: string) => {
+    const wei = parseEthAmount(ethAmount);
+    if (wei === null) {
+      toast.error('Enter a valid ETH amount (e.g. 0.05).');
+      return false;
+    }
+    return buyChipsAction(wei);
+  }, [buyChipsAction]);
+
+  const handleWithdrawChips = useCallback(async (rawAmount: string) => {
+    const amount = parseChipAmount(rawAmount);
+    if (amount === null) {
+      toast.error('Enter a valid chip amount.');
+      return false;
+    }
+    return withdrawChipsAction(amount);
+  }, [withdrawChipsAction]);
 
   const headerWalletPanel = useMemo(() => (
     {
       walletBalance: walletBalanceDisplay,
       pending: pendingAction !== null,
       onClaimFreeChips: claimFreeChipsAction,
+      onBuyChips: handleBuyChips,
+      onWithdrawChips: handleWithdrawChips,
       hasClaimedFreeChips
     }
-  ), [walletBalanceDisplay, pendingAction, claimFreeChipsAction, hasClaimedFreeChips]);
+  ), [
+    walletBalanceDisplay,
+    pendingAction,
+    claimFreeChipsAction,
+    handleBuyChips,
+    handleWithdrawChips,
+    hasClaimedFreeChips
+  ]);
 
   useEffect(() => {
     if (!joinOpen) {
@@ -152,6 +194,7 @@ const Index = () => {
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(10,23,36,0.65),rgba(5,12,24,0.92))]" />
       <main className="relative mx-auto flex w-full max-w-6xl flex-col gap-10 px-4 py-16 sm:px-6 lg:px-8">
         <SiteHeader playerTableId={playerTableId} tablePhase={currentTable?.phase} walletPanel={headerWalletPanel} />
+        <BankHealthBanner />
         <section className="grid gap-10 lg:grid-cols-[minmax(0,1.05fr),380px]">
           <div className="space-y-6">
             <Badge variant="secondary" className="bg-primary/20 text-primary-foreground/90">
@@ -161,7 +204,7 @@ const Index = () => {
               CipherJack: Fully Encrypted Blackjack Powered by Zama FHE
             </h1>
             <p className="max-w-2xl text-base text-white/80 sm:text-lg">
-              Experience privacy-first blackjack on Sepolia. Cards are secured with fully homomorphic encryption from Zama, wagers are handled in smart contracts, and every hand is verifiable onchain.
+              Play blackjack on Sepolia with Zama FHE user-decrypt for your cards, on-chain wagers, and verifiable settlement. v1 stores encrypted handles alongside clear game state for fast rule execution.
             </p>
             <div className="flex flex-wrap gap-3">
               <Button
@@ -189,8 +232,8 @@ const Index = () => {
             <div className="grid gap-4 sm:grid-cols-2">
               <LobbyFeature
                 icon={ShieldCheck}
-                title="Provably Fair"
-                description="Every card draw is verifiably generated onchain and sealed with FHE for tamper-proof gameplay."
+                title="FHE Card Decrypt"
+                description="Your hand is mirrored as encrypted on-chain handles; only your wallet can user-decrypt them via Zama's relayer SDK."
               />
               <LobbyFeature
                 icon={Zap}
@@ -444,6 +487,11 @@ const Index = () => {
                     min={Number(selectedTable?.minBuyIn ?? 1)}
                     className="bg-white/10 text-white"
                   />
+                  {walletChips !== undefined && walletChips === 0n && (
+                    <p className="text-xs text-amber-300/90">
+                      Your wallet has 0 chips. Claim free chips from the wallet panel before joining.
+                    </p>
+                  )}
                 </div>
               </>
             )}

@@ -1,4 +1,5 @@
 require("@nomicfoundation/hardhat-toolbox");
+require("@fhevm/hardhat-plugin");
 require("dotenv").config();
 
 const optimizerSettings = {
@@ -25,6 +26,7 @@ module.exports = {
   networks: {
     sepolia: {
       url: process.env.SEPOLIA_RPC_URL || "",
+      chainId: 11155111,
       accounts: process.env.SEPOLIA_DEPLOYER_KEY ? [process.env.SEPOLIA_DEPLOYER_KEY] : []
     }
   }
