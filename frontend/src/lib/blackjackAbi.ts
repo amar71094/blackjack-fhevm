@@ -2,8 +2,263 @@
 export const blackjackAbi = [
   {
     "inputs": [],
-    "stateMutability": "nonpayable",
-    "type": "constructor"
+    "name": "ActiveHand",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AddrCoverage",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AddrMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AlreadyAtTable",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AlreadyBet",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AlreadyClaimedFreeChips",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AmountTooSmall",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ArrayLengthMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BadCommitment",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BadDealerCount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BadPayout",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BankUnderfunded",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BettingClosed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ContractLacksEth",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ContractPaused",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "DealerCardCountMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "EthTransferFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ExceedsEthBacking",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "HandInProgress",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InsufficientChips",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidAmount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidBet",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidBuyIn",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidPendingKind",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidStakes",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "LeaveTableFirst",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "MaxTables",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NeedOneCard",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoBet",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoChips",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoEthSent",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoPlayers",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotAtTable",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotDealPending",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotPlayerPhase",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotSettlePending",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotTimedOut",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotYourTurn",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NothingPending",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OnlyBetweenHands",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OnlyFirstTwoCards",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OnlyOracle",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OnlyOwner",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OraclePending",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PlayerAddrsMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PlayerBustedAction",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PlayerCountMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PlayerNotFound",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PromoChipsNotWithdrawable",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "RankCountMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ReentrancyGuardActive",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "SendEth",
+    "type": "error"
   },
   {
     "inputs": [
@@ -23,7 +278,32 @@ export const blackjackAbi = [
   },
   {
     "inputs": [],
+    "name": "TableDNE",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TableFull",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TableInactive",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "ZamaProtocolUnsupported",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ZeroAddress",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ZeroAmount",
     "type": "error"
   },
   {
@@ -302,7 +582,7 @@ export const blackjackAbi = [
       },
       {
         "indexed": false,
-        "internalType": "enum Blackjack.PendingKind",
+        "internalType": "enum BlackjackStorage.PendingKind",
         "name": "kind",
         "type": "uint8"
       },
@@ -352,7 +632,7 @@ export const blackjackAbi = [
       },
       {
         "indexed": false,
-        "internalType": "enum Blackjack.GamePhase",
+        "internalType": "enum BlackjackStorage.GamePhase",
         "name": "newPhase",
         "type": "uint8"
       }
@@ -596,6 +876,19 @@ export const blackjackAbi = [
   {
     "inputs": [],
     "name": "CHIPS_PER_ETH",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "FREE_CHIP_GRANT",
     "outputs": [
       {
         "internalType": "uint256",
@@ -857,7 +1150,7 @@ export const blackjackAbi = [
             "type": "uint256"
           },
           {
-            "internalType": "enum Blackjack.TableStatus",
+            "internalType": "enum BlackjackStorage.TableStatus",
             "name": "status",
             "type": "uint8"
           },
@@ -872,7 +1165,7 @@ export const blackjackAbi = [
             "type": "uint256"
           },
           {
-            "internalType": "enum Blackjack.GamePhase",
+            "internalType": "enum BlackjackStorage.GamePhase",
             "name": "phase",
             "type": "uint8"
           },
@@ -887,7 +1180,7 @@ export const blackjackAbi = [
             "type": "uint256"
           }
         ],
-        "internalType": "struct Blackjack.TableSummary[]",
+        "internalType": "struct BlackjackStorage.TableSummary[]",
         "name": "",
         "type": "tuple[]"
       }
@@ -1022,7 +1315,7 @@ export const blackjackAbi = [
             "type": "uint256"
           },
           {
-            "internalType": "enum Blackjack.Outcome",
+            "internalType": "enum BlackjackStorage.Outcome",
             "name": "outcome",
             "type": "uint8"
           },
@@ -1032,7 +1325,7 @@ export const blackjackAbi = [
             "type": "uint256"
           }
         ],
-        "internalType": "struct Blackjack.PlayerResult[]",
+        "internalType": "struct BlackjackStorage.PlayerResult[]",
         "name": "results",
         "type": "tuple[]"
       },
@@ -1154,7 +1447,7 @@ export const blackjackAbi = [
             "type": "uint256"
           },
           {
-            "internalType": "enum Blackjack.TableStatus",
+            "internalType": "enum BlackjackStorage.TableStatus",
             "name": "status",
             "type": "uint8"
           },
@@ -1179,7 +1472,7 @@ export const blackjackAbi = [
             "type": "uint8"
           },
           {
-            "internalType": "enum Blackjack.GamePhase",
+            "internalType": "enum BlackjackStorage.GamePhase",
             "name": "phase",
             "type": "uint8"
           },
@@ -1221,7 +1514,7 @@ export const blackjackAbi = [
                 "type": "bool"
               }
             ],
-            "internalType": "struct Blackjack.PlayPlayer[]",
+            "internalType": "struct BlackjackStorage.PlayPlayer[]",
             "name": "players",
             "type": "tuple[]"
           },
@@ -1238,7 +1531,7 @@ export const blackjackAbi = [
                 "type": "bool"
               }
             ],
-            "internalType": "struct Blackjack.PlayDealer",
+            "internalType": "struct BlackjackStorage.PlayDealer",
             "name": "dealer",
             "type": "tuple"
           },
@@ -1248,7 +1541,7 @@ export const blackjackAbi = [
             "type": "uint256"
           },
           {
-            "internalType": "enum Blackjack.PendingKind",
+            "internalType": "enum BlackjackStorage.PendingKind",
             "name": "pendingKind",
             "type": "uint8"
           },
@@ -1258,7 +1551,7 @@ export const blackjackAbi = [
             "type": "address"
           }
         ],
-        "internalType": "struct Blackjack.PlayTable",
+        "internalType": "struct BlackjackStorage.PlayTable",
         "name": "",
         "type": "tuple"
       }
@@ -1284,7 +1577,7 @@ export const blackjackAbi = [
             "type": "uint256"
           },
           {
-            "internalType": "enum Blackjack.TableStatus",
+            "internalType": "enum BlackjackStorage.TableStatus",
             "name": "status",
             "type": "uint8"
           },
@@ -1299,7 +1592,7 @@ export const blackjackAbi = [
             "type": "uint256"
           },
           {
-            "internalType": "enum Blackjack.GamePhase",
+            "internalType": "enum BlackjackStorage.GamePhase",
             "name": "phase",
             "type": "uint8"
           },
@@ -1314,7 +1607,7 @@ export const blackjackAbi = [
             "type": "uint256"
           }
         ],
-        "internalType": "struct Blackjack.TableSummary",
+        "internalType": "struct BlackjackStorage.TableSummary",
         "name": "",
         "type": "tuple"
       }
@@ -1531,7 +1824,7 @@ export const blackjackAbi = [
         "type": "uint8[]"
       },
       {
-        "internalType": "enum Blackjack.Outcome[]",
+        "internalType": "enum BlackjackStorage.Outcome[]",
         "name": "outcomes",
         "type": "uint8[]"
       },
@@ -1687,7 +1980,7 @@ export const blackjackAbi = [
         "type": "uint256"
       },
       {
-        "internalType": "enum Blackjack.TableStatus",
+        "internalType": "enum BlackjackStorage.TableStatus",
         "name": "status",
         "type": "uint8"
       },
@@ -1712,7 +2005,7 @@ export const blackjackAbi = [
         "type": "uint8"
       },
       {
-        "internalType": "enum Blackjack.GamePhase",
+        "internalType": "enum BlackjackStorage.GamePhase",
         "name": "phase",
         "type": "uint8"
       },
@@ -1739,7 +2032,7 @@ export const blackjackAbi = [
             "type": "bool"
           }
         ],
-        "internalType": "struct Blackjack.Dealer",
+        "internalType": "struct BlackjackStorage.Dealer",
         "name": "dealer",
         "type": "tuple"
       },
@@ -1778,7 +2071,7 @@ export const blackjackAbi = [
                 "type": "uint256"
               },
               {
-                "internalType": "enum Blackjack.Outcome",
+                "internalType": "enum BlackjackStorage.Outcome",
                 "name": "outcome",
                 "type": "uint8"
               },
@@ -1788,7 +2081,7 @@ export const blackjackAbi = [
                 "type": "uint256"
               }
             ],
-            "internalType": "struct Blackjack.PlayerResult[]",
+            "internalType": "struct BlackjackStorage.PlayerResult[]",
             "name": "results",
             "type": "tuple[]"
           },
@@ -1813,7 +2106,7 @@ export const blackjackAbi = [
             "type": "bytes32[]"
           }
         ],
-        "internalType": "struct Blackjack.HandResult",
+        "internalType": "struct BlackjackStorage.HandResult",
         "name": "lastHandResult",
         "type": "tuple"
       },
@@ -1828,7 +2121,7 @@ export const blackjackAbi = [
         "type": "uint256"
       },
       {
-        "internalType": "enum Blackjack.PendingKind",
+        "internalType": "enum BlackjackStorage.PendingKind",
         "name": "pendingKind",
         "type": "uint8"
       },
@@ -1890,6 +2183,25 @@ export const blackjackAbi = [
     "name": "withdrawChips",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "withdrawableChips",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   }
 ] as const;

@@ -1,2 +1,4 @@
 .env
 oracle/.sessions.json
+oracle/.commitment-seeds.json
+oracle/.oracle.lock

@@ -4,6 +4,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { atomicWriteJson } = require('./atomicStore');
 
 const STORE_PATH = path.join(__dirname, '.commitment-seeds.json');
 
@@ -20,7 +21,7 @@ function rememberDealSeed(tableId, deckCommitment, dealSeed) {
   if (!deckCommitment || !dealSeed) return;
   const store = loadStore();
   store[deckCommitment] = { dealSeed: String(dealSeed), tableId: String(tableId), savedAt: Date.now() };
-  fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2));
+  atomicWriteJson(STORE_PATH, store);
 }
 
 function lookupDealSeed(deckCommitment) {

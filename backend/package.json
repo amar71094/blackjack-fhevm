@@ -8,6 +8,7 @@
     "deploy": "hardhat run scripts/deploy.js",
     "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
     "sync-abi": "hardhat compile && node scripts/sync-abi.js",
+    "verify:sepolia": "hardhat run scripts/verify.js --network sepolia",
     "oracle": "node oracle/index.js"
   },
   "devDependencies": {
@@ -27,7 +28,7 @@
     "@types/chai": "^4.3.20",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.0.0",
-    "@zama-fhe/relayer-sdk": "^0.4.1",
+    "@zama-fhe/relayer-sdk": "0.4.1",
     "chai": "^4.5.0",
     "dotenv": "^17.2.3",
     "ethers": "^6.17.0",

@@ -168,3 +168,22 @@ export const invalidateStoredSignature = (contractAddress: `0x${string}`, userAd
   const storage = resolveStorage();
   storage.removeItem(signatureStorageKey(userAddress, contractAddress));
 };
+
+export const clearAllStoredSignatures = (userAddress?: string) => {
+  const storage = resolveStorage();
+  const prefix = userAddress
+    ? `${STORAGE_PREFIX}:${userAddress.toLowerCase()}:`
+    : `${STORAGE_PREFIX}:`;
+  if (typeof window === 'undefined' || !window.sessionStorage) {
+    for (const key of [...memoryStore.keys()]) {
+      if (key.startsWith(prefix)) memoryStore.delete(key);
+    }
+    return;
+  }
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < window.sessionStorage.length; i++) {
+    const key = window.sessionStorage.key(i);
+    if (key?.startsWith(prefix)) keysToRemove.push(key);
+  }
+  keysToRemove.forEach((key) => storage.removeItem(key));
+};

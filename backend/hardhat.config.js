@@ -4,7 +4,7 @@ require("dotenv").config();
 
 const optimizerSettings = {
   enabled: true,
-  runs: 200
+  runs: 1
 };
 
 const compilerSettings = {
@@ -24,10 +24,16 @@ module.exports = {
     tests: "./test"
   },
   networks: {
+    hardhat: {
+      allowUnlimitedContractSize: true
+    },
     sepolia: {
       url: process.env.SEPOLIA_RPC_URL || "",
       chainId: 11155111,
       accounts: process.env.SEPOLIA_DEPLOYER_KEY ? [process.env.SEPOLIA_DEPLOYER_KEY] : []
     }
+  },
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_API_KEY || ""
   }
 };

@@ -5,9 +5,9 @@ import {
   usePublicClient,
   useReadContract,
   useWatchContractEvent,
-
   useWalletClient
 } from 'wagmi';
+import { sepolia } from 'wagmi/chains';
 import { blackjackContract } from '@/lib/contracts';
 import { blackjackAbi } from '@/lib/blackjackAbi';
 import { GameState, Player, Card } from '@/types/blackjack';
@@ -34,6 +34,7 @@ import {
 } from '@/lib/decryptionSignature';
 import { devDebug, devError, devLog, devWarn } from '@/lib/devLog';
 import { friendlyRevertMessage, writeBlackjackContract } from '@/lib/contractWrite';
+import { waitForTxReceipt } from '@/lib/txReceipt';
 
 const DEFAULT_TABLE_ID = 1n;
 const TABLE_POLL_INTERVAL = 15_000;
@@ -108,8 +109,11 @@ export interface BlackjackGameData {
   isSeated: boolean;
   isPlayerTurn?: boolean;
   oraclePending: boolean;
+  oraclePendingForSelf: boolean;
+  pendingOraclePlayer: string | null;
   oracleConfirmingBust: boolean;
   tableStuck: boolean;
+  turnTimer: { secondsRemaining: number; turnTimeoutSeconds: number } | null;
   winners: WinnerEventPayload | null;
   isLoading: boolean;
   showdownResult: ShowdownSummary | null;
@@ -135,9 +139,10 @@ export interface BlackjackGameData {
     hit: () => Promise<boolean>;
     stand: () => Promise<boolean>;
     doubleDown: () => Promise<boolean>;
-    forceAdvanceOnTimeout: () => Promise<boolean>;
     acknowledgeShowdown: () => Promise<void>;
     retryPlayerDecrypt: () => void;
+    retryDealerDecrypt: () => void;
+    resetDecryption: () => void;
   };
   pendingAction: string | null;
 }
@@ -146,7 +151,7 @@ export interface BlackjackGameData {
 export const useBlackjackGame = (
   { tableId = DEFAULT_TABLE_ID }: UseBlackjackGameOptions = {}
 ): BlackjackGameData => {
-  const { address: walletAddress } = useAccount();
+  const { address: walletAddress, chainId } = useAccount();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -298,6 +303,16 @@ export const useBlackjackGame = (
     }
   });
 
+  const { data: turnTimeoutRaw } = useReadContract({
+    ...blackjackContract,
+    functionName: 'TURN_TIMEOUT',
+    query: {
+      enabled: readEnabled && hasTable
+    }
+  });
+
+  const [turnTimerTick, setTurnTimerTick] = useState(() => Date.now());
+
   const table = useMemo(() => {
     if (!rawTable) return undefined;
     const playTable = normalizePlayTable(rawTable);
@@ -322,6 +337,12 @@ export const useBlackjackGame = (
     if (!table) return undefined;
     return toUiGameState(table);
   }, [table]);
+
+  useEffect(() => {
+    if (table?.phase !== GamePhase.PlayerTurns) return;
+    const id = window.setInterval(() => setTurnTimerTick(Date.now()), 1_000);
+    return () => window.clearInterval(id);
+  }, [table?.phase]);
 
 const playerHandSignature = useMemo(() => {
   if (!baseGameState || !walletAddress || !table) return '0';
@@ -1048,6 +1069,7 @@ const playerHandSignature = useMemo(() => {
     };
 
     const run = async () => {
+      let scheduledDealerRetry = false;
       if (cancelled) return;
 
       if (dealerDecryptState !== 'pending') {
@@ -1057,12 +1079,6 @@ const playerHandSignature = useMemo(() => {
       }
 
       if (dealerDecryptBlockedRef.current) {
-        resetPending();
-        clearRetryTimer();
-        return;
-      }
-
-      if (dealerDecryptState === 'error') {
         resetPending();
         clearRetryTimer();
         return;
@@ -1097,7 +1113,6 @@ const playerHandSignature = useMemo(() => {
       }
 
       const shouldAttempt =
-        dealerDecryptState === 'error' ||
         !dealerPublicHand ||
         lastDealerResultTimestampRef.current !== latestResultTimestamp;
 
@@ -1160,11 +1175,9 @@ const playerHandSignature = useMemo(() => {
               dealerDecryptErrorRef.current = latestResultTimestamp;
               const rateLimited = isRateLimitError(fetchError);
               const authIssue = isAuthError(fetchError);
-              const description = authIssue
-                ? 'Dealer handle fetch was rejected. Provide an authenticated RPC URL and refresh the table.'
-                : rateLimited
-                  ? 'RPC provider rate-limited dealer handle reads. Waiting before retrying.'
-                  : 'Could not load dealer encrypted cards from the contract. Check the RPC connection and try again.';
+              const description = rateLimited || authIssue
+                ? 'RPC is busy — waiting before retrying dealer reveal.'
+                : 'Could not load dealer encrypted cards from the contract. Check the RPC connection and try again.';
               toast.error('Dealer reveal unavailable', { description });
             }
             setDealerDecryptState('error');
@@ -1180,8 +1193,8 @@ const playerHandSignature = useMemo(() => {
       }
 
       if (!Array.isArray(rankHandles) || rankHandles.length === 0) {
+        scheduledDealerRetry = true;
         resetPending();
-        clearRetryTimer();
         retryTimer = setTimeout(() => {
           if (!cancelled) {
             run();
@@ -1282,8 +1295,8 @@ const playerHandSignature = useMemo(() => {
             /not publicly decryptable yet|not_ready_for_decryption/i.test(errorMessage);
 
           if (awaitingPublicDecrypt) {
+            scheduledDealerRetry = true;
             resetPending();
-            clearRetryTimer();
             retryTimer = setTimeout(() => {
               if (!cancelled) {
                 setDealerDecryptState('pending');
@@ -1292,33 +1305,34 @@ const playerHandSignature = useMemo(() => {
             return;
           }
 
-          setDealerPublicHand(null);
+          const cachedReveal = dealerHandByTimestamp[latestResultTimestamp];
+          if (cachedReveal) {
+            setDealerPublicHand(cachedReveal);
+          } else {
+            setDealerPublicHand(null);
+            lastDealerResultTimestampRef.current = 0;
+          }
           if (dealerDecryptErrorRef.current !== latestResultTimestamp) {
             dealerDecryptErrorRef.current = latestResultTimestamp;
             const rateLimited = isRateLimitError(error);
-            const authIssue = isAuthError(error);
             const isNetworkIssue =
               rateLimited || isNetworkLikeError(error) || /relayer|gateway/i.test(errorMessage.toLowerCase());
-            const description = authIssue
-              ? 'Dealer reveal was rejected by the RPC endpoint. Configure an authenticated provider to continue.'
-              : rateLimited
-                ? 'Dealer reveal was rate-limited by your RPC provider. Pausing before the next attempt.'
-                : isNetworkIssue
-                  ? 'Unable to reach the dealer decryption service. Please try again once the relayer is reachable.'
-                  : 'Use the force control if the table is stuck, or retry shortly.';
+            const description = rateLimited
+              ? 'RPC is busy — pausing before the next dealer reveal attempt.'
+              : isNetworkIssue
+                ? 'Unable to reach the dealer decryption service. Retry shortly.'
+                : 'Use Retry reveal or force-advance if the table is stuck.';
             toast.error('Dealer reveal failed', { description });
           }
           setDealerDecryptState('error');
           lastDealerDecryptErrorAtRef.current = Date.now();
-          if (isAuthError(error)) {
-            dealerDecryptBlockedRef.current = true;
-          }
           lastDealerHandleSignatureRef.current = null;
-          lastDealerResultTimestampRef.current = 0;
         }
       } finally {
-        resetPending();
-        clearRetryTimer();
+        if (!scheduledDealerRetry) {
+          resetPending();
+          clearRetryTimer();
+        }
       }
     };
 
@@ -1340,7 +1354,8 @@ const playerHandSignature = useMemo(() => {
     rawShowdownSummary,
     latestResultTimestamp,
     dealerDecryptState,
-    dealerPublicHand
+    dealerPublicHand,
+    dealerHandByTimestamp
   ]);
 
   useEffect(() => {
@@ -1646,6 +1661,24 @@ const playerHandSignature = useMemo(() => {
 
   const oraclePending = useMemo(() => pendingOracleKind !== PendingKind.None, [pendingOracleKind]);
 
+  const oraclePendingForSelf = useMemo(() => {
+    if (!oraclePending || !pendingOraclePlayer || !lowerWalletAddress) return false;
+    return pendingOraclePlayer === lowerWalletAddress;
+  }, [oraclePending, pendingOraclePlayer, lowerWalletAddress]);
+
+  const turnTimer = useMemo(() => {
+    if (!table || table.phase !== GamePhase.PlayerTurns) return null;
+    const waitingPlayer = table.players.some(
+      (player) => player.bet > 0n && player.isActive && !player.hasActed && !player.busted
+    );
+    if (!waitingPlayer) return null;
+    const turnTimeoutSeconds = Number(turnTimeoutRaw ?? 60n);
+    const lastActivity = Number(table.lastActivityTimestamp);
+    const deadlineMs = (lastActivity + turnTimeoutSeconds) * 1_000;
+    const secondsRemaining = Math.max(0, Math.ceil((deadlineMs - turnTimerTick) / 1_000));
+    return { secondsRemaining, turnTimeoutSeconds };
+  }, [table, turnTimeoutRaw, turnTimerTick]);
+
   const oracleConfirmingBust = useMemo(() => {
     if (!gameState || !oraclePending) return false;
     if (pendingOracleKind !== PendingKind.Hit && pendingOracleKind !== PendingKind.DoubleDown) {
@@ -1784,13 +1817,17 @@ const playerHandSignature = useMemo(() => {
       toast.error('Blackjack contract address is not configured.');
       return false;
     }
+    if (chainId !== sepolia.id) {
+      toast.error('Switch your wallet to Sepolia to play CipherJack.');
+      return false;
+    }
     return true;
-  }, [walletAddress, contractAddress]);
+  }, [walletAddress, contractAddress, chainId]);
 
   const waitForReceipt = useCallback(
     async (hash: `0x${string}`) => {
       if (!publicClient) return null;
-      return publicClient.waitForTransactionReceipt({ hash });
+      return waitForTxReceipt(publicClient, hash);
     },
     [publicClient]
   );
@@ -1808,6 +1845,24 @@ const playerHandSignature = useMemo(() => {
     playerDecryptBlockedRef.current = false;
     setPlayerDecryptState('pending');
   }, [walletAddress, contractAddress]);
+
+  const retryDealerDecrypt = useCallback(() => {
+    dealerDecryptInFlightRef.current = null;
+    dealerDecryptBlockedRef.current = false;
+    dealerDecryptErrorRef.current = null;
+    lastDealerHandleSignatureRef.current = null;
+    setDealerDecryptState('pending');
+  }, []);
+
+  const resetDecryption = useCallback(() => {
+    if (walletAddress && contractAddress) {
+      invalidateStoredSignature(contractAddress, walletAddress);
+    }
+    playerDecryptBlockedRef.current = false;
+    dealerDecryptBlockedRef.current = false;
+    retryPlayerDecrypt();
+    retryDealerDecrypt();
+  }, [contractAddress, retryDealerDecrypt, retryPlayerDecrypt, walletAddress]);
 
   const refetchAfterWrite = useCallback(
     async (mode: RefreshMode = 'auto') => {
@@ -2004,15 +2059,14 @@ const playerHandSignature = useMemo(() => {
         if (!guardPlayerAction()) return false;
         return execute({ functionName: 'doubleDown', args: [tableId] as const }, 'Double down executed', 'core');
       },
-      forceAdvanceOnTimeout: async () => (
-        execute({ functionName: 'forceAdvanceOnTimeout', args: [tableId] as const }, 'Turn advanced', 'core')
-      ),
       acknowledgeShowdown: async () => {
         if (latestResultTimestamp === 0) return;
         setAcknowledgedResultTimestamp(latestResultTimestamp);
         setWinners(null);
       },
-      retryPlayerDecrypt: () => retryPlayerDecrypt()
+      retryPlayerDecrypt: () => retryPlayerDecrypt(),
+      retryDealerDecrypt: () => retryDealerDecrypt(),
+      resetDecryption: () => resetDecryption()
     }),
     [
       awaitingNextHand,
@@ -2020,6 +2074,8 @@ const playerHandSignature = useMemo(() => {
       guardPlayerAction,
       hasActiveSeat,
       latestResultTimestamp,
+      resetDecryption,
+      retryDealerDecrypt,
       retryPlayerDecrypt,
       table,
       tableId,
@@ -2119,6 +2175,38 @@ const playerHandSignature = useMemo(() => {
     }
   });
 
+  useWatchContractEvent({
+    address: contractAddress,
+    abi: blackjackAbi,
+    eventName: 'TurnAutoAdvanced',
+    args: { tableId },
+    enabled: eventsEnabled,
+    onLogs: (logs) => {
+      devLog('[BlackjackGame] TurnAutoAdvanced event', { tableId, logs });
+      for (const log of logs) {
+        const timedOut = log.args?.playerTimedOut as `0x${string}` | undefined;
+        const reason = (log.args?.reason as string | undefined) ?? 'timeout';
+        if (!timedOut) continue;
+        const short = `${timedOut.slice(0, 6)}…${timedOut.slice(-4)}`;
+        const isSelf = lowerWalletAddress && timedOut.toLowerCase() === lowerWalletAddress;
+        if (reason === 'timeout-stand') {
+          toast.info(
+            isSelf
+              ? 'Your turn timed out — you were auto-stood.'
+              : `${short} timed out and was auto-stood.`
+          );
+        } else {
+          toast.info(
+            isSelf
+              ? 'Your turn was auto-advanced by the oracle.'
+              : `${short}'s turn was auto-advanced (${reason}).`
+          );
+        }
+      }
+      scheduleCoreRefetch();
+    }
+  });
+
   return {
     contractAddress,
     tableId,
@@ -2132,8 +2220,11 @@ const playerHandSignature = useMemo(() => {
     isSeated,
     isPlayerTurn: effectivePlayerTurn,
     oraclePending,
+    oraclePendingForSelf,
+    pendingOraclePlayer,
     oracleConfirmingBust,
     tableStuck,
+    turnTimer,
     winners,
     isLoading: isFetchingTable || isWriting,
     showdownResult,

@@ -14,6 +14,7 @@ import {
 } from 'wagmi';
 import { sepolia } from 'wagmi/chains';
 import { hasWalletConnect, walletConnectConnector } from '@/lib/wagmi';
+import { clearAllStoredSignatures } from '@/lib/decryptionSignature';
 
 export interface WalletPanelConfig {
   walletBalance: string;
@@ -125,9 +126,12 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
   }, [connect, connectorMap, orderedConnectors, toast]);
 
   const handleDisconnect = useCallback(() => {
+    if (address) {
+      clearAllStoredSignatures(address);
+    }
     disconnect();
     setOpen(false);
-  }, [disconnect]);
+  }, [address, disconnect]);
 
   const handleCopyAddress = useCallback(() => {
     if (!address) return;

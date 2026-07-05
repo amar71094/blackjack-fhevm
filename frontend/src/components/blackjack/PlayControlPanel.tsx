@@ -2,7 +2,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { Hand, PauseCircle, RefreshCcw, Swords } from 'lucide-react';
+import { Hand, PauseCircle, Swords } from 'lucide-react';
 
 type StatusVariant = 'active' | 'waiting' | 'locked' | 'idle';
 
@@ -23,7 +23,6 @@ interface PlayControlPanelProps {
   onHit: () => void;
   onStand: () => void;
   onDouble: () => void;
-  onForceAdvance: () => void;
   isPending: boolean;
   availableChips?: string;
   minBet?: string;
@@ -54,7 +53,6 @@ export const PlayControlPanel = ({
   onHit,
   onStand,
   onDouble,
-  onForceAdvance,
   isPending,
   availableChips,
   minBet,
@@ -158,23 +156,6 @@ export const PlayControlPanel = ({
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top">Double your wager and take exactly one more card.</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                onClick={onForceAdvance}
-                disabled={disableActions || isPending}
-                className={cn(
-                  actionButtonBase,
-                  'border border-dashed border-amber-300/50 bg-transparent text-amber-200 hover:border-amber-200 hover:bg-amber-400/10'
-                )}
-              >
-                <RefreshCcw className="h-4 w-4" /> Force
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              Push the round forward when a player has timed out.
-            </TooltipContent>
           </Tooltip>
         </div>
       </div>

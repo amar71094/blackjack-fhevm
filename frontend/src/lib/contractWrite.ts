@@ -1,4 +1,5 @@
 import type { Abi, Address, ContractFunctionArgs, ContractFunctionName, PublicClient, WalletClient } from 'viem';
+import { sepolia } from 'viem/chains';
 import { blackjackAbi } from '@/lib/blackjackAbi';
 
 /** Measured on-chain gas with headroom — prevents wallets/RPCs from rejecting inflated estimates. */
@@ -23,15 +24,20 @@ const GAS_BUFFER_DEN = 100n;
 const DEFAULT_GAS_CEILING = 500_000n;
 
 const revertHints: Record<string, string> = {
-  'Insufficient chips': 'Claim free chips or buy more chips before joining.',
-  'Already at table': 'Leave your current table before joining another.',
-  'Invalid buy-in': 'Buy-in must be between the table min and max.',
-  'Table full': 'This table is full — try another table.',
-  'Table DNE': 'That table does not exist.',
-  'Betting closed': 'Betting is closed for this hand.',
-  'Not your turn': 'Wait for your turn before acting.',
-  'Oracle pending': 'Wait for the oracle to finish the last action.',
-  'Player busted': 'You busted — no further actions are needed.'
+  InsufficientChips: 'Claim free chips or buy more chips before joining.',
+  AlreadyAtTable: 'Leave your current table before joining another.',
+  InvalidBuyIn: 'Buy-in must be between the table min and max.',
+  TableFull: 'This table is full — try another table.',
+  TableDNE: 'That table does not exist.',
+  BettingClosed: 'Betting is closed for this hand.',
+  NotYourTurn: 'Wait for your turn before acting.',
+  OraclePending: 'Wait for the oracle to finish the last action.',
+  PlayerBustedAction: 'You busted — no further actions are needed.',
+  AlreadyBet: 'You already placed a bet for this hand.',
+  HandInProgress: 'Wait for the current hand to finish before joining.',
+  PromoChipsNotWithdrawable: 'Only chips purchased with ETH can be withdrawn.',
+  ContractPaused: 'The game is paused — try again shortly.',
+  LeaveTableFirst: 'Leave your table before moving chips in or out of your wallet.'
 };
 
 export const friendlyRevertMessage = (error: unknown): string | undefined => {
@@ -79,6 +85,11 @@ export async function writeBlackjackContract<
   const account = walletClient.account;
   if (!account) {
     throw new Error('Wallet account is not connected.');
+  }
+
+  const walletChainId = await walletClient.getChainId();
+  if (walletChainId !== sepolia.id) {
+    throw new Error('Switch your wallet to Sepolia before submitting this transaction.');
   }
 
   const simulateArgs = {

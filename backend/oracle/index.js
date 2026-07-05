@@ -5,16 +5,31 @@
  */
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
+const crypto = require('crypto');
+const path = require('path');
 const { ethers } = require('ethers');
-const { PendingKind, TableSession, handTotal, deckCommitment, isBusted } = require('./gameEngine');
+const {
+  PendingKind,
+  TableSession,
+  handTotal,
+  deckCommitment,
+  isBusted,
+  resolveOutcome
+} = require('./gameEngine');
+const { acquireProcessLock, releaseProcessLock } = require('./atomicStore');
 const { encryptForRelayer } = require('./fheEncrypt');
 
 const PendingKindName = Object.fromEntries(
   Object.entries(PendingKind).map(([k, v]) => [v, k])
 );
 
-const RPC_URL = process.env.ORACLE_RPC_URL || process.env.SEPOLIA_RPC_URL || 'http://127.0.0.1:8545';
-const PRIVATE_KEY = process.env.ORACLE_PRIVATE_KEY || process.env.SEPOLIA_DEPLOYER_KEY;
+const { createFallbackProvider } = require('./rpcProvider');
+const rpcPool = createFallbackProvider();
+const ALLOW_DEPLOYER_FALLBACK = process.env.ALLOW_DEPLOYER_ORACLE_KEY === 'true';
+const PRIVATE_KEY =
+  process.env.ORACLE_PRIVATE_KEY ||
+  (ALLOW_DEPLOYER_FALLBACK ? process.env.SEPOLIA_DEPLOYER_KEY : undefined);
+const ORACLE_LOCK_PATH = path.join(__dirname, '.oracle.lock');
 const CONTRACT_ADDRESS = process.env.BLACKJACK_CONTRACT_ADDRESS;
 const POLL_INTERVAL_MS = Number(process.env.ORACLE_POLL_INTERVAL_MS ?? 8_000);
 const ERROR_BACKOFF_MS = Number(process.env.ORACLE_ERROR_BACKOFF_MS ?? 15_000);
@@ -166,7 +181,7 @@ async function dealLikelySucceeded(contract, tableId, playBefore) {
 }
 
 function sessionMatchesCommitment(session, onChainCommitment) {
-  if (!onChainCommitment || onChainCommitment === ethers.ZeroHash) return true;
+  if (!onChainCommitment || onChainCommitment === ethers.ZeroHash) return false;
   if (!session.deckOrder) return false;
   if (session.deckCommitment === onChainCommitment) return true;
   return deckCommitment(session.deckOrder) === onChainCommitment;
@@ -205,7 +220,6 @@ async function ensureSessionForCommitment(contract, tableId, play) {
   session.dealSeed = remembered;
   const activeAddrs = play.players.filter((p) => p.bet > 0n).map((p) => p.addr);
   session.tryRecoverFromDealSeed(activeAddrs, play);
-  session.syncFromChainPlay(play);
   persistSessions();
   console.log(`[oracle] table=${tableId} session restored from commitment store`);
   return session;
@@ -216,11 +230,6 @@ async function recoverSessionIfNeeded(contract, tableId, play) {
   const active = play.players.filter((p) => p.bet > 0n);
   const activeAddrs = active.map((p) => p.addr);
 
-  if (session.deckOrder && session.syncFromChainPlay(play)) {
-    persistSessions();
-    console.log(`[oracle] synced session card counts from chain table=${tableId}`);
-  }
-
   if (session.matchesPlay(play)) return true;
 
   let rebuilt = session.tryRebuildFromActionLog(activeAddrs, play);
@@ -229,7 +238,6 @@ async function recoverSessionIfNeeded(contract, tableId, play) {
   }
 
   if (rebuilt) {
-    session.syncFromChainPlay(play);
     persistSessions();
     console.log(`[oracle] recovered session table=${tableId}`);
     return session.matchesPlay(play);
@@ -242,7 +250,7 @@ async function fulfillDeal(contract, tableId, play, signer) {
   const session = getSession(tableId);
   const snapshot = session.snapshot();
   const active = play.players.filter((p) => p.bet > 0n && p.isActive);
-  const seed = BigInt(ethers.keccak256(ethers.toUtf8Bytes(`${tableId}-${Date.now()}-${play.deckIndex}`)));
+  const seed = BigInt(`0x${crypto.randomBytes(32).toString('hex')}`);
   try {
     const calldata = session.buildDealCalldata(active, seed);
     session.dealSeed = seed.toString();
@@ -314,7 +322,15 @@ async function fulfillHitOrDouble(contract, tableId, play, kind, signer) {
   const player = play.pendingPlayer;
   const playerState = play.players.find((p) => p.addr.toLowerCase() === player.toLowerCase());
   if (playerState?.busted) {
-    console.warn(`[oracle] table=${tableId} skipping ${PendingKindName[kind] ?? kind} — player already busted on-chain`);
+    console.warn(
+      `[oracle] table=${tableId} clearing stale ${PendingKindName[kind] ?? kind} — player already busted on-chain`
+    );
+    await assertPendingKind(contract, tableId, kind);
+    const populated = await contract.connect(signer).oracleFulfillPending.populateTransaction(
+      tableId, [], [], '0x', [], [], play.dealer.cardCount, false
+    );
+    const tx = await sendOracleTxSerialized(signer, populated);
+    await tx.wait();
     return;
   }
 
@@ -370,8 +386,7 @@ async function fulfillStand(contract, tableId, play, signer) {
 
   const actor = play.players.find((p) => p.addr.toLowerCase() === play.pendingPlayer.toLowerCase());
   if (actor?.busted) {
-    console.warn(`[oracle] table=${tableId} skipping Stand — player already busted on-chain`);
-    return;
+    console.warn(`[oracle] table=${tableId} fulfilling Stand for busted player to clear pending`);
   }
 
   await assertPendingKind(contract, tableId, PendingKind.Stand);
@@ -490,6 +505,44 @@ async function fulfillSettle(contract, tableId, play, signer) {
   }
 
   const payload = session.buildSettlePayload(active);
+  const dealerRanks = session.getDealerRanks();
+  const computedDealerBusted = isBusted(dealerRanks);
+  const computedDealerTotal = handTotal(dealerRanks);
+
+  if (payload.dealerBusted !== computedDealerBusted) {
+    const err = new Error(
+      `Dealer bust mismatch table=${tableId} payload=${payload.dealerBusted} computed=${computedDealerBusted}`
+    );
+    err.code = 'ORACLE_INVALID_SETTLE_PAYLOAD';
+    throw err;
+  }
+  if (payload.dealerTotal !== computedDealerTotal) {
+    const err = new Error(
+      `Dealer total mismatch table=${tableId} payload=${payload.dealerTotal} computed=${computedDealerTotal}`
+    );
+    err.code = 'ORACLE_INVALID_SETTLE_PAYLOAD';
+    throw err;
+  }
+
+  for (let i = 0; i < active.length; i++) {
+    const addr = payload.players[i];
+    const ranks = session.getPlayerRanks(addr);
+    const expectedOutcome = resolveOutcome(ranks, dealerRanks);
+    if (payload.outcomes[i] !== expectedOutcome) {
+      const err = new Error(
+        `Outcome mismatch table=${tableId} player=${addr} payload=${payload.outcomes[i]} expected=${expectedOutcome}`
+      );
+      err.code = 'ORACLE_INVALID_SETTLE_PAYLOAD';
+      throw err;
+    }
+    if (payload.totals[i] !== handTotal(ranks)) {
+      const err = new Error(
+        `Player total mismatch table=${tableId} player=${addr} payload=${payload.totals[i]} computed=${handTotal(ranks)}`
+      );
+      err.code = 'ORACLE_INVALID_SETTLE_PAYLOAD';
+      throw err;
+    }
+  }
 
   if (play.dealer.cardCount > 0 && payload.dealerTotal === 0) {
     const err = new Error(`Refusing settle with dealerTotal=0 while dealer has ${play.dealer.cardCount} cards`);
@@ -522,6 +575,26 @@ async function fulfillSettle(contract, tableId, play, signer) {
   console.log(`[oracle] settled table=${tableId} tx=${tx.hash}`);
 }
 
+async function tryAutoAdvanceTimeout(contract, tableId, signer) {
+  const raw = await contract.getTablePlayState(tableId);
+  const play = parsePlayTable(raw);
+  if (play.phase !== 2 || play.pendingKind !== PendingKind.None) return false;
+
+  const timeout = Number(await contract.TURN_TIMEOUT());
+  const lastActivity = Number(raw.lastActivityTimestamp);
+  const now = Math.floor(Date.now() / 1000);
+  if (now < lastActivity + timeout) return false;
+
+  const waiting = play.players.filter((p) => p.bet > 0n && p.isActive && !p.hasActed && !p.busted);
+  if (waiting.length === 0) return false;
+
+  const populated = await contract.forceAdvanceOnTimeout.populateTransaction(tableId);
+  const tx = await sendOracleTxSerialized(signer, populated);
+  await tx.wait();
+  console.log(`[oracle] auto-advanced timed-out turn table=${tableId} player=${waiting[0].addr}`);
+  return true;
+}
+
 async function recoverStuckPlayerPhase(contract, tableId) {
   const play = await readPendingPlay(contract, tableId);
   if (play.phase !== 2 || play.pendingKind !== PendingKind.None) return false;
@@ -542,6 +615,7 @@ async function handlePending(contract, tableId, signer) {
   const play = await readPendingPlay(contract, tableId);
   const kind = play.pendingKind;
   if (kind === PendingKind.None) {
+    if (await tryAutoAdvanceTimeout(contract, tableId, signer)) return true;
     await recoverSessionIfNeeded(contract, tableId, play);
     await recoverStuckPlayerPhase(contract, tableId);
     return false;
@@ -615,7 +689,16 @@ async function pollTables(contract, signer) {
 
 async function main() {
   if (!PRIVATE_KEY) {
-    console.error('Set ORACLE_PRIVATE_KEY or SEPOLIA_DEPLOYER_KEY');
+    console.error(
+      'Set ORACLE_PRIVATE_KEY (or ALLOW_DEPLOYER_ORACLE_KEY=true with SEPOLIA_DEPLOYER_KEY for local dev only)'
+    );
+    process.exit(1);
+  }
+
+  try {
+    acquireProcessLock(ORACLE_LOCK_PATH);
+  } catch (err) {
+    console.error(err.message ?? err);
     process.exit(1);
   }
   if (!CONTRACT_ADDRESS) {
@@ -623,12 +706,10 @@ async function main() {
     process.exit(1);
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, {
-    staticNetwork: true
-  });
-  const signer = new ethers.Wallet(PRIVATE_KEY, provider);
+  let provider = rpcPool.getProvider();
+  let signer = new ethers.Wallet(PRIVATE_KEY, provider);
   const artifact = require('../artifacts/contracts/Blackjack.sol/Blackjack.json');
-  const contract = new ethers.Contract(CONTRACT_ADDRESS, artifact.abi, signer);
+  let contract = new ethers.Contract(CONTRACT_ADDRESS, artifact.abi, signer);
 
   const network = await provider.getNetwork();
   const bytecode = await provider.getCode(CONTRACT_ADDRESS);
@@ -657,18 +738,26 @@ async function main() {
   }
 
   console.log(`[oracle] polling contract=${CONTRACT_ADDRESS} signer=${signer.address}`);
-  console.log(`[oracle] rpc=${RPC_URL} chainId=${network.chainId} interval=${POLL_INTERVAL_MS}ms`);
+  console.log(`[oracle] rpc=${rpcPool.currentUrl()} chainId=${network.chainId} interval=${POLL_INTERVAL_MS}ms`);
+  console.log(`[oracle] rpc fallbacks=${rpcPool.urls.length}`);
 
   await pollTables(contract, signer);
 
   const timer = setInterval(() => {
     pollTables(contract, signer).catch((err) => {
+      if (rpcPool.isRetryableRpcError(err)) {
+        rpcPool.rotate(err.shortMessage ?? err.message ?? 'rpc error');
+        provider = rpcPool.getProvider();
+        signer = new ethers.Wallet(PRIVATE_KEY, provider);
+        contract = new ethers.Contract(CONTRACT_ADDRESS, artifact.abi, signer);
+      }
       console.error('[oracle] poll error:', err.shortMessage ?? err.message ?? err);
     });
   }, POLL_INTERVAL_MS);
 
   const shutdown = () => {
     clearInterval(timer);
+    releaseProcessLock(ORACLE_LOCK_PATH);
     console.log('[oracle] stopped');
     process.exit(0);
   };

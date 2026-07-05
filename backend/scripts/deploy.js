@@ -2,13 +2,28 @@ const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
 
+async function deployBlackjack() {
+  const mathLib = await hre.ethers.getContractFactory("BlackjackMathLib");
+  const mathLibInstance = await mathLib.deploy();
+  await mathLibInstance.waitForDeployment();
+  const mathLibAddress = await mathLibInstance.getAddress();
+  console.log("BlackjackMathLib deployed to:", mathLibAddress);
+
+  const Blackjack = await hre.ethers.getContractFactory("Blackjack", {
+    libraries: {
+      BlackjackMathLib: mathLibAddress
+    }
+  });
+  const blackjack = await Blackjack.deploy();
+  await blackjack.waitForDeployment();
+  return { blackjack, mathLibAddress };
+}
+
 async function main() {
   const [deployer] = await hre.ethers.getSigners();
   console.log("Deploying with account:", deployer.address);
 
-  const Blackjack = await hre.ethers.getContractFactory("Blackjack");
-  const blackjack = await Blackjack.deploy();
-  await blackjack.waitForDeployment();
+  const { blackjack, mathLibAddress } = await deployBlackjack();
 
   const address = await blackjack.getAddress();
   console.log("Blackjack deployed to:", address);
@@ -45,6 +60,7 @@ async function main() {
         network: hre.network.name,
         contract: "Blackjack",
         address,
+        mathLib: mathLibAddress,
         deployer: deployer.address,
         bankFundEth: bankFunded ? bankFundEth : "0",
         deployedAt: new Date().toISOString()
@@ -65,3 +81,5 @@ main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+
+module.exports = { deployBlackjack };

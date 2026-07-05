@@ -2,13 +2,14 @@ const { loadFixture, time } = require("@nomicfoundation/hardhat-toolbox/network-
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { GamePhase, playHandToCompletion, clearSessions } = require("./oracleHelpers");
+const { deployBlackjack } = require("./deployHelpers");
+
+const FREE_CHIP_GRANT = 2_000;
 
 describe("Blackjack contract", function () {
   async function deployFixture() {
     const [owner, alice, bob] = await ethers.getSigners();
-    const Blackjack = await ethers.getContractFactory("Blackjack");
-    const blackjack = await Blackjack.deploy();
-    await blackjack.waitForDeployment();
+    const { blackjack } = await deployBlackjack();
     clearSessions();
     return { blackjack, owner, alice, bob };
   }
@@ -20,8 +21,8 @@ describe("Blackjack contract", function () {
     await blackjack.connect(owner).createTable(1_000, 10_000);
     await blackjack.connect(alice).claimFreeChips();
     await blackjack.connect(bob).claimFreeChips();
-    await blackjack.connect(alice).joinTable(1, 5_000);
-    await blackjack.connect(bob).joinTable(1, 5_000);
+    await blackjack.connect(alice).joinTable(1, 2_000);
+    await blackjack.connect(bob).joinTable(1, 2_000);
     return base;
   }
 
@@ -30,8 +31,11 @@ describe("Blackjack contract", function () {
       const { blackjack, alice } = await loadFixture(deployFixture);
       await expect(blackjack.connect(alice).claimFreeChips())
         .to.emit(blackjack, "FreeChipsClaimed")
-        .withArgs(alice.address, 10_000);
-      await expect(blackjack.connect(alice).claimFreeChips()).to.be.revertedWith("Already claimed");
+        .withArgs(alice.address, FREE_CHIP_GRANT);
+      await expect(blackjack.connect(alice).claimFreeChips()).to.be.revertedWithCustomError(
+        blackjack,
+        "AlreadyClaimedFreeChips"
+      );
     });
 
     it("mints chips according to the conversion rate and allows withdrawing them", async function () {
@@ -43,11 +47,94 @@ describe("Blackjack contract", function () {
         .to.emit(blackjack, "ChipsPurchased")
         .withArgs(alice.address, oneEth, chips);
 
+      expect(await blackjack.withdrawableChips(alice.address)).to.equal(chips);
+
       await expect(blackjack.connect(alice).withdrawChips(chips))
         .to.emit(blackjack, "ChipsWithdrawn")
         .withArgs(alice.address, chips, oneEth);
 
       expect(await blackjack.getPlayerChips(alice.address)).to.equal(0);
+      expect(await blackjack.withdrawableChips(alice.address)).to.equal(0);
+    });
+
+    it("blocks withdrawing promotional free chips", async function () {
+      const { blackjack, alice } = await loadFixture(deployFixture);
+      await blackjack.connect(alice).claimFreeChips();
+      await expect(blackjack.connect(alice).withdrawChips(1_000)).to.be.revertedWithCustomError(
+        blackjack,
+        "PromoChipsNotWithdrawable"
+      );
+    });
+
+    it("makes ETH-backed winnings withdrawable after leaving the table", async function () {
+      const { blackjack, owner, alice, bob } = await loadFixture(deployFixture);
+      const { oracleFulfillPending, getSession, PendingKind, parsePlayTable } = require("./oracleHelpers");
+      const Outcome = { Lose: 0, Win: 1, Push: 2, Blackjack: 3 };
+
+      await blackjack.connect(owner).fundBank({ value: ethers.parseEther("1") });
+      await blackjack.connect(owner).createTable(1_000, 10_000);
+
+      const ethAmount = ethers.parseEther("0.00003");
+      await blackjack.connect(alice).buyChips({ value: ethAmount });
+      const purchased = await blackjack.ethToChips(ethAmount);
+
+      await blackjack.connect(bob).claimFreeChips();
+      const buyIn = 2_000n;
+      const bet = 1_000n;
+
+      await blackjack.connect(alice).joinTable(1, buyIn);
+      await blackjack.connect(bob).joinTable(1, buyIn);
+
+      expect(await blackjack.withdrawableChips(alice.address)).to.equal(purchased - buyIn);
+
+      await blackjack.connect(alice).placeBet(1, bet);
+      await blackjack.connect(bob).placeBet(1, bet);
+      await oracleFulfillPending(blackjack, owner, 1);
+
+      await blackjack.connect(alice).stand(1);
+      await oracleFulfillPending(blackjack, owner, 1);
+      await blackjack.connect(bob).stand(1);
+      await oracleFulfillPending(blackjack, owner, 1);
+
+      for (let i = 0; i < 12; i++) {
+        const play = parsePlayTable(await blackjack.getTablePlayState(1));
+        if (play.pendingKind === PendingKind.Settle) break;
+        if (play.pendingKind !== PendingKind.None) {
+          await oracleFulfillPending(blackjack, owner, 1);
+        }
+      }
+
+      const play = parsePlayTable(await blackjack.getTablePlayState(1));
+      expect(play.pendingKind).to.equal(PendingKind.Settle);
+
+      const session = getSession(1);
+      const active = play.players.filter((p) => p.bet > 0n);
+      const payload = session.buildSettlePayload(active);
+      const outcomes = [...payload.outcomes];
+      const payouts = [...payload.payouts];
+      const aliceIdx = payload.players.findIndex((addr) => addr === alice.address);
+      outcomes[aliceIdx] = Outcome.Win;
+      payouts[aliceIdx] = bet * 2n;
+
+      await blackjack.connect(owner).oracleSettleWithOutcomes(
+        1,
+        payload.players,
+        payload.totals,
+        outcomes,
+        payouts,
+        payload.dealerTotal,
+        payload.dealerBusted
+      );
+
+      const walletRemainder = purchased - buyIn;
+      const tableChipsAfterWin = buyIn - bet + (bet * 2n);
+      const expectedTotal = walletRemainder + tableChipsAfterWin;
+      await blackjack.connect(alice).cashOut(1);
+      expect(await blackjack.getPlayerChips(alice.address)).to.equal(expectedTotal);
+      expect(await blackjack.withdrawableChips(alice.address)).to.equal(expectedTotal);
+
+      await expect(blackjack.connect(alice).withdrawChips(expectedTotal))
+        .to.emit(blackjack, "ChipsWithdrawn");
     });
   });
 
@@ -60,12 +147,28 @@ describe("Blackjack contract", function () {
       expect(await blackjack.getTablesCount()).to.equal(1);
 
       await blackjack.connect(alice).claimFreeChips();
-      await expect(blackjack.connect(alice).joinTable(1, 5_000))
+      await expect(blackjack.connect(alice).joinTable(1, 1_500))
         .to.emit(blackjack, "PlayerJoined")
-        .withArgs(1, alice.address, 5_000);
+        .withArgs(1, alice.address, 1_500);
 
       expect(await blackjack.getPlayerTableId(alice.address)).to.equal(1);
-      expect(await blackjack.getPlayerChips(alice.address)).to.equal(5_000);
+      expect(await blackjack.getPlayerChips(alice.address)).to.equal(500);
+    });
+
+    it("rejects joining while a hand is in progress", async function () {
+      const { blackjack, owner, alice, bob } = await loadFixture(fundedTableFixture);
+      await blackjack.connect(alice).placeBet(1, 1_000);
+      await blackjack.connect(bob).placeBet(1, 1_000);
+      const { oracleFulfillPending } = require("./oracleHelpers");
+      await oracleFulfillPending(blackjack, owner, 1);
+
+      const signers = await ethers.getSigners();
+      const carol = signers[3];
+      await blackjack.connect(carol).claimFreeChips();
+      await expect(blackjack.connect(carol).joinTable(1, 1_500)).to.be.revertedWithCustomError(
+        blackjack,
+        "HandInProgress"
+      );
     });
 
     it("starts the game automatically once the second player sits down", async function () {
@@ -73,9 +176,9 @@ describe("Blackjack contract", function () {
       await blackjack.connect(owner).createTable(1_000, 10_000);
       await blackjack.connect(alice).claimFreeChips();
       await blackjack.connect(bob).claimFreeChips();
-      await blackjack.connect(alice).joinTable(1, 5_000);
+      await blackjack.connect(alice).joinTable(1, 1_500);
 
-      await expect(blackjack.connect(bob).joinTable(1, 5_000))
+      await expect(blackjack.connect(bob).joinTable(1, 1_500))
         .to.emit(blackjack, "GameStarted")
         .withArgs(1);
     });
@@ -84,21 +187,24 @@ describe("Blackjack contract", function () {
       const { blackjack, owner, alice } = await loadFixture(deployFixture);
       await blackjack.connect(owner).createTable(1_000, 10_000);
       await blackjack.connect(alice).claimFreeChips();
-      await blackjack.connect(alice).joinTable(1, 4_000);
+      await blackjack.connect(alice).joinTable(1, 1_500);
 
       await expect(blackjack.connect(alice).leaveTable(1))
         .to.emit(blackjack, "PlayerLeft")
         .withArgs(1, alice.address);
 
       expect(await blackjack.getPlayerTableId(alice.address)).to.equal(0);
-      expect(await blackjack.getPlayerChips(alice.address)).to.equal(10_000);
+      expect(await blackjack.getPlayerChips(alice.address)).to.equal(FREE_CHIP_GRANT);
     });
   });
 
   describe("Bank controls", function () {
     it("lets the owner fund and defund the dealer bank while non-owners are blocked", async function () {
       const { blackjack, owner, alice } = await loadFixture(deployFixture);
-      await expect(blackjack.connect(alice).fundBank({ value: 1 })).to.be.revertedWith("Only owner");
+      await expect(blackjack.connect(alice).fundBank({ value: 1 })).to.be.revertedWithCustomError(
+        blackjack,
+        "OnlyOwner"
+      );
 
       const deposit = ethers.parseEther("0.5");
       const chipsAdded = await blackjack.ethToChips(deposit);
@@ -118,9 +224,9 @@ describe("Blackjack contract", function () {
       const { blackjack, owner, alice } = await loadFixture(deployFixture);
       await blackjack.connect(owner).createTable(1_000, 10_000);
       await blackjack.connect(alice).claimFreeChips();
-      await blackjack.connect(alice).joinTable(1, 4_000);
+      await blackjack.connect(alice).joinTable(1, 1_000);
 
-      const topUpAmount = 1_000;
+      const topUpAmount = 500;
       const walletBefore = await blackjack.getPlayerChips(alice.address);
 
       await expect(blackjack.connect(alice).topUpTableChips(1, topUpAmount))
@@ -133,7 +239,7 @@ describe("Blackjack contract", function () {
         .to.emit(blackjack, "PlayerLeft")
         .withArgs(1, alice.address);
 
-      expect(await blackjack.getPlayerChips(alice.address)).to.equal(10_000);
+      expect(await blackjack.getPlayerChips(alice.address)).to.equal(FREE_CHIP_GRANT);
       expect(await blackjack.getPlayerTableId(alice.address)).to.equal(0);
     });
 
@@ -141,13 +247,13 @@ describe("Blackjack contract", function () {
       const { blackjack, owner, alice } = await loadFixture(deployFixture);
       await blackjack.connect(owner).createTable(1_000, 10_000);
       await blackjack.connect(alice).claimFreeChips();
-      await blackjack.connect(alice).joinTable(1, 6_000);
+      await blackjack.connect(alice).joinTable(1, 2_000);
 
       await expect(blackjack.connect(alice).cashOut(1))
         .to.emit(blackjack, "PlayerLeft")
         .withArgs(1, alice.address);
 
-      expect(await blackjack.getPlayerChips(alice.address)).to.equal(10_000);
+      expect(await blackjack.getPlayerChips(alice.address)).to.equal(FREE_CHIP_GRANT);
       expect(await blackjack.getPlayerTableId(alice.address)).to.equal(0);
     });
 
@@ -155,17 +261,28 @@ describe("Blackjack contract", function () {
       const { blackjack, owner, alice } = await loadFixture(deployFixture);
       await blackjack.connect(owner).createTable(1_000, 10_000);
       await blackjack.connect(alice).claimFreeChips();
-      await blackjack.connect(alice).joinTable(1, 4_000);
+      await blackjack.connect(alice).joinTable(1, 1_500);
 
       await expect(blackjack.connect(alice).buyChips({ value: ethers.parseEther("0.1") }))
-        .to.be.revertedWith("Leave table first");
+        .to.be.revertedWithCustomError(blackjack, "LeaveTableFirst");
 
       await expect(blackjack.connect(alice).withdrawChips(1_000))
-        .to.be.revertedWith("Leave table first");
+        .to.be.revertedWithCustomError(blackjack, "LeaveTableFirst");
     });
   });
 
   describe("Gameplay integration", function () {
+    it("rejects placing a second bet in the same hand", async function () {
+      const { blackjack, owner, alice, bob } = await loadFixture(fundedTableFixture);
+      await blackjack.connect(alice).placeBet(1, 1_000);
+      await expect(blackjack.connect(alice).placeBet(1, 1_000)).to.be.revertedWithCustomError(
+        blackjack,
+        "AlreadyBet"
+      );
+      await blackjack.connect(bob).placeBet(1, 1_000);
+      await require("./oracleHelpers").playHandToCompletion(blackjack, owner, 1, [alice, bob]);
+    });
+
     it("runs a full betting round through oracle deal, stand, and settlement", async function () {
       const { blackjack, owner, alice, bob } = await loadFixture(fundedTableFixture);
       const bet = 1_000n;
@@ -207,8 +324,11 @@ describe("Blackjack contract", function () {
       expect(Number(tableMid.phase)).to.equal(GamePhase.PlayerTurns);
 
       const bankPreLeave = await blackjack.bankChips();
+      const [, ethBackedBefore] = await blackjack.getBankHealth();
+      const headroom = ethBackedBefore > bankPreLeave ? ethBackedBefore - bankPreLeave : 0n;
+      const expectedForfeit = 1_000n > headroom ? headroom : 1_000n;
       await blackjack.connect(alice).leaveTable(1);
-      expect(await blackjack.bankChips() - bankPreLeave).to.equal(1_000n);
+      expect(await blackjack.bankChips() - bankPreLeave).to.equal(expectedForfeit);
       expect(await blackjack.getPlayerTableId(alice.address)).to.equal(0);
 
       await playHandToCompletion(blackjack, owner, 1, [bob]);
@@ -231,17 +351,88 @@ describe("Blackjack contract", function () {
     it("reports bank solvency against on-chain ETH backing", async function () {
       const { blackjack, owner } = await loadFixture(deployFixture);
       const [floatBefore, ethBackedBefore, solventBefore] = await blackjack.getBankHealth();
-      expect(solventBefore).to.equal(ethBackedBefore >= floatBefore);
-      expect(floatBefore).to.be.gt(ethBackedBefore);
+      expect(floatBefore).to.equal(0n);
+      expect(ethBackedBefore).to.equal(0n);
+      expect(solventBefore).to.equal(true);
 
       const deposit = ethers.parseEther("10");
       await blackjack.connect(owner).fundBank({ value: deposit });
 
       const [chipsFloat, ethBackedAfter, solventAfter] = await blackjack.getBankHealth();
       const fundedChips = await blackjack.ethToChips(deposit);
-      expect(ethBackedAfter).to.equal(ethBackedBefore + fundedChips);
-      expect(chipsFloat).to.equal(floatBefore + fundedChips);
-      expect(solventAfter).to.equal(chipsFloat <= ethBackedAfter);
+      expect(ethBackedAfter).to.equal(fundedChips);
+      expect(chipsFloat).to.equal(fundedChips);
+      expect(solventAfter).to.equal(true);
+    });
+
+    it("doubles down through oracle fulfillment and settles", async function () {
+      const { blackjack, owner, alice, bob } = await loadFixture(fundedTableFixture);
+      const { oracleFulfillPending, playHandToCompletion } = require("./oracleHelpers");
+
+      await blackjack.connect(alice).placeBet(1, 1_000);
+      await blackjack.connect(bob).placeBet(1, 1_000);
+      await oracleFulfillPending(blackjack, owner, 1);
+
+      expect(await blackjack.isPlayerTurn(1, alice.address)).to.equal(true);
+      await blackjack.connect(alice).doubleDown(1);
+      await oracleFulfillPending(blackjack, owner, 1);
+
+      const playAfterDouble = await blackjack.getTablePlayState(1);
+      const aliceState = playAfterDouble.players.find((p) => p.addr === alice.address);
+      expect(aliceState.bet).to.equal(2_000n);
+      expect(aliceState.hasActed).to.equal(true);
+      expect(aliceState.cardCount).to.equal(3);
+
+      await playHandToCompletion(blackjack, owner, 1, [bob]);
+      const [, , results] = await blackjack.getLastHandResult(1);
+      expect(results.length).to.equal(2);
+    });
+
+    it("rejects inflated oracle payouts at settlement", async function () {
+      const { blackjack, owner, alice, bob } = await loadFixture(fundedTableFixture);
+      const { oracleFulfillPending, getSession, PendingKind, parsePlayTable } = require("./oracleHelpers");
+
+      await blackjack.connect(alice).placeBet(1, 1_000);
+      await blackjack.connect(bob).placeBet(1, 1_000);
+
+      for (let i = 0; i < 24; i++) {
+        const raw = await blackjack.getTablePlayState(1);
+        const play = parsePlayTable(raw);
+        if (play.pendingKind === PendingKind.Settle) break;
+        if (play.pendingKind !== PendingKind.None) {
+          await oracleFulfillPending(blackjack, owner, 1);
+          continue;
+        }
+        if (play.phase === 2) {
+          for (const signer of [alice, bob]) {
+            if (await blackjack.isPlayerTurn(1, signer.address)) {
+              await blackjack.connect(signer).stand(1);
+            }
+          }
+        }
+      }
+
+      const raw = await blackjack.getTablePlayState(1);
+      const play = parsePlayTable(raw);
+      expect(play.pendingKind).to.equal(PendingKind.Settle);
+
+      const session = getSession(1);
+      const active = play.players.filter((p) => p.bet > 0n);
+      const payload = session.buildSettlePayload(active);
+      const inflated = [...payload.payouts];
+      inflated[0] = inflated[0] + 1n;
+
+      await expect(
+        blackjack.connect(owner).oracleSettleWithOutcomes(
+          1,
+          payload.players,
+          payload.totals,
+          payload.outcomes,
+          inflated,
+          payload.dealerTotal,
+          payload.dealerBusted
+        )
+      ).to.be.revertedWithCustomError(blackjack, "BadPayout");
     });
 
     it("marks busted players and blocks further actions", async function () {
@@ -277,8 +468,14 @@ describe("Blackjack contract", function () {
       expect(aliceState.isActive).to.equal(false);
       expect(aliceState.hasActed).to.equal(true);
       expect(await blackjack.isPlayerTurn(1, alice.address)).to.equal(false);
-      await expect(blackjack.connect(alice).hit(1)).to.be.revertedWith("Not your turn");
-      await expect(blackjack.connect(alice).stand(1)).to.be.revertedWith("Not your turn");
+      await expect(blackjack.connect(alice).hit.staticCall(1)).to.be.revertedWithCustomError(
+        blackjack,
+        "NotYourTurn"
+      );
+      await expect(blackjack.connect(alice).stand.staticCall(1)).to.be.revertedWithCustomError(
+        blackjack,
+        "NotYourTurn"
+      );
       expect(await blackjack.isPlayerTurn(1, bob.address)).to.equal(true);
     });
 
@@ -320,8 +517,8 @@ describe("Blackjack contract", function () {
       await blackjack.connect(bob).placeBet(1, 1_000);
 
       await expect(
-        blackjack.connect(alice).oracleDealHand(1, ethers.ZeroHash, 0, [], [], [], '0x')
-      ).to.be.revertedWith("Only oracle");
+        blackjack.connect(alice).oracleDealHand.staticCall(1, ethers.ZeroHash, 0, [], [], [], '0x')
+      ).to.be.revertedWithCustomError(blackjack, "OnlyOracle");
     });
   });
 
@@ -329,11 +526,14 @@ describe("Blackjack contract", function () {
     it("blocks gameplay while paused and allows recovery via unpause", async function () {
       const { blackjack, owner, alice } = await loadFixture(deployFixture);
       await blackjack.connect(owner).pause();
-      await expect(blackjack.connect(alice).claimFreeChips()).to.be.revertedWith("Paused");
+      await expect(blackjack.connect(alice).claimFreeChips()).to.be.revertedWithCustomError(
+        blackjack,
+        "ContractPaused"
+      );
       await blackjack.connect(owner).unpause();
       await expect(blackjack.connect(alice).claimFreeChips())
         .to.emit(blackjack, "FreeChipsClaimed")
-        .withArgs(alice.address, 10_000);
+        .withArgs(alice.address, FREE_CHIP_GRANT);
     });
 
     it("blocks in-hand actions while paused", async function () {
@@ -345,18 +545,18 @@ describe("Blackjack contract", function () {
       await oracleFulfillPending(blackjack, owner, 1);
 
       await blackjack.connect(owner).pause();
-      await expect(blackjack.connect(alice).hit(1)).to.be.revertedWith("Paused");
-      await expect(blackjack.connect(alice).stand(1)).to.be.revertedWith("Paused");
+      await expect(blackjack.connect(alice).hit(1)).to.be.revertedWithCustomError(blackjack, "ContractPaused");
+      await expect(blackjack.connect(alice).stand(1)).to.be.revertedWithCustomError(blackjack, "ContractPaused");
     });
 
     it("lets the owner hand off control securely", async function () {
       const { blackjack, owner, alice } = await loadFixture(deployFixture);
       await blackjack.connect(owner).transferOwnership(alice.address);
-      await expect(blackjack.connect(owner).pause()).to.be.revertedWith("Only owner");
+      await expect(blackjack.connect(owner).pause()).to.be.revertedWithCustomError(blackjack, "OnlyOwner");
       await blackjack.connect(alice).pause();
       await blackjack.connect(alice).unpause();
       await blackjack.connect(alice).claimFreeChips();
-      expect(await blackjack.getPlayerChips(alice.address)).to.equal(10_000);
+      expect(await blackjack.getPlayerChips(alice.address)).to.equal(FREE_CHIP_GRANT);
     });
 
     it("enforces the MAX_TABLES limit", async function () {
@@ -367,7 +567,10 @@ describe("Blackjack contract", function () {
         await blackjack.connect(owner).createTable(1_000, 10_000);
       }
 
-      await expect(blackjack.connect(owner).createTable(1_000, 10_000)).to.be.revertedWith("Max tables");
+      await expect(blackjack.connect(owner).createTable(1_000, 10_000)).to.be.revertedWithCustomError(
+        blackjack,
+        "MaxTables"
+      );
     });
   });
 });

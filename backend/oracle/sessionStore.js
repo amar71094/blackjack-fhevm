@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { TableSession } = require('./gameEngine');
+const { atomicWriteJson } = require('./atomicStore');
 
 const STORE_PATH = path.join(__dirname, '.sessions.json');
 
@@ -43,7 +44,7 @@ function saveSessions(sessions) {
       deckCommitment: session.deckCommitment ?? null
     };
   }
-  fs.writeFileSync(STORE_PATH, JSON.stringify(out, null, 2));
+  atomicWriteJson(STORE_PATH, out);
 }
 
 module.exports = { loadSessions, saveSessions, STORE_PATH };

@@ -1,10 +1,12 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccount, usePublicClient, useReadContract, useWalletClient } from 'wagmi';
+import { sepolia } from 'wagmi/chains';
 import { toast } from '@/lib/toast';
 import { blackjackContract } from '@/lib/contracts';
 import { TableStatus, GamePhase } from '@/types/blackjackContract';
 import { devError, devLog } from '@/lib/devLog';
 import { friendlyRevertMessage, writeBlackjackContract } from '@/lib/contractWrite';
+import { waitForTxReceipt } from '@/lib/txReceipt';
 
 export interface LobbyTable {
   id: bigint;
@@ -52,7 +54,7 @@ const toBigInt = (value: unknown) => (typeof value === 'bigint' ? value : BigInt
 
 // Orchestrates lobby reads (table list + player's seat) and exposes lightweight actions.
 export const useBlackjackLobby = (): BlackjackLobbyData => {
-  const { address } = useAccount();
+  const { address, chainId } = useAccount();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -61,17 +63,30 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
   const {
     data: rawSummaries,
     refetch,
-    isFetching
+    isFetching,
+    isSuccess: summariesSuccess,
+    isError: summariesError,
+    error: summariesQueryError
   } = useReadContract({
     ...blackjackContract,
     functionName: 'getAllTableSummaries',
     query: {
       enabled: Boolean(blackjackContract.address),
-      refetchInterval: LOBBY_POLL_INTERVAL,
-      onSuccess: (data) => devLog('[BlackjackLobby] getAllTableSummaries success', data),
-      onError: (err) => devError('[BlackjackLobby] getAllTableSummaries error', err)
+      refetchInterval: LOBBY_POLL_INTERVAL
     }
   });
+
+  useEffect(() => {
+    if (summariesSuccess && rawSummaries) {
+      devLog('[BlackjackLobby] getAllTableSummaries success', rawSummaries);
+    }
+  }, [summariesSuccess, rawSummaries]);
+
+  useEffect(() => {
+    if (summariesError && summariesQueryError) {
+      devError('[BlackjackLobby] getAllTableSummaries error', summariesQueryError);
+    }
+  }, [summariesError, summariesQueryError]);
 
   const tables = useMemo(() => {
     if (!rawSummaries) return [];
@@ -133,7 +148,7 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
   const waitForReceipt = useCallback(
     async (hash: `0x${string}`) => {
       if (!publicClient) return;
-      await publicClient.waitForTransactionReceipt({ hash });
+      await waitForTxReceipt(publicClient, hash);
     },
     [publicClient]
   );
@@ -147,8 +162,12 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
       toast.error('Blackjack contract is not configured.');
       return false;
     }
+    if (chainId !== sepolia.id) {
+      toast.error('Switch your wallet to Sepolia to play CipherJack.');
+      return false;
+    }
     return true;
-  }, [address]);
+  }, [address, chainId]);
 
   type LobbyFunction =
     | 'createTable'

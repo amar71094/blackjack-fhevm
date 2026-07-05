@@ -5,6 +5,7 @@ import dealerGhost from '@/assets/dealer-ghost.png';
 import { cn } from '@/lib/utils';
 import { ChipStack } from './ChipStack';
 import type { PlayerDecryptState } from './PlayerSpot';
+import { RotateCcw } from 'lucide-react';
 
 // Props describing the dealer section regardless of hand state.
 interface DealerSpotProps {
@@ -15,10 +16,11 @@ interface DealerSpotProps {
   visibleCount?: number;
   awaitingReveal?: boolean;
   decryptState?: PlayerDecryptState;
+  onRetryDecrypt?: () => void;
 }
 
 // Renders the dealer avatar, cards, and current status/bust callout.
-export const DealerSpot = ({ dealer, hideSecondCard, dealerWins, potAmount = 0, visibleCount, awaitingReveal = false, decryptState = 'idle' }: DealerSpotProps) => {
+export const DealerSpot = ({ dealer, hideSecondCard, dealerWins, potAmount = 0, visibleCount, awaitingReveal = false, decryptState = 'idle', onRetryDecrypt }: DealerSpotProps) => {
   const cardsRevealed = dealer.cardsRevealed && !hideSecondCard;
   const safeVisibleCount = visibleCount === undefined
     ? dealer.displayHand.length
@@ -112,8 +114,20 @@ export const DealerSpot = ({ dealer, hideSecondCard, dealerWins, potAmount = 0, 
           )}
 
           {!cardsRevealed && decryptMessage && (
-            <div className="rounded-full border border-primary/30 bg-black/50 px-4 py-1 text-xs font-semibold uppercase tracking-[0.35em] text-primary/70 shadow">
-              {decryptMessage}
+            <div className="flex flex-col items-center gap-2">
+              <div className="rounded-full border border-primary/30 bg-black/50 px-4 py-1 text-xs font-semibold uppercase tracking-[0.35em] text-primary/70 shadow">
+                {decryptMessage}
+              </div>
+              {decryptState === 'error' && onRetryDecrypt ? (
+                <button
+                  type="button"
+                  onClick={onRetryDecrypt}
+                  className="flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.28em] text-primary hover:bg-primary/20"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Retry reveal
+                </button>
+              ) : null}
             </div>
           )}
         </div>

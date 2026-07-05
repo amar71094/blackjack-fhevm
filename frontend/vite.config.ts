@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import fs from "fs";
@@ -30,6 +30,20 @@ const wasmMimePlugin = (): import("vite").Plugin => ({
   },
 });
 
+const envValidationPlugin = (mode: string): import("vite").Plugin => ({
+  name: "env-validation",
+  buildStart() {
+    if (mode !== "production") return;
+    const env = loadEnv(mode, process.cwd(), "VITE_");
+    if (!env.VITE_BLACKJACK_CONTRACT) {
+      throw new Error("VITE_BLACKJACK_CONTRACT is required for production builds.");
+    }
+    if (!/^0x[a-fA-F0-9]{40}$/.test(env.VITE_BLACKJACK_CONTRACT)) {
+      throw new Error("VITE_BLACKJACK_CONTRACT must be a valid 0x-prefixed address.");
+    }
+  },
+});
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
@@ -41,6 +55,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   plugins: [
+    envValidationPlugin(mode),
     react(),
     nodePolyfills(),
     wasmMimePlugin(),
@@ -67,6 +82,25 @@ export default defineConfig(({ mode }) => ({
       },
       define: {
         global: "globalThis",
+      },
+    },
+  },
+  build: {
+    sourcemap: mode !== "production",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("@zama-fhe/relayer-sdk")) return "relayer-sdk";
+          if (
+            id.includes("/react-dom/") ||
+            id.includes("/react-router-dom/") ||
+            /\/node_modules\/react\//.test(id)
+          ) {
+            return "vendor-react";
+          }
+          if (id.includes("/wagmi/") || id.includes("/viem/")) return "vendor-wagmi";
+        },
       },
     },
   },

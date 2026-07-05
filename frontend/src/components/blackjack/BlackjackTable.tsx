@@ -74,8 +74,11 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     isSeated,
     isPlayerTurn,
     oraclePending,
+    oraclePendingForSelf,
+    pendingOraclePlayer,
     oracleConfirmingBust,
     tableStuck,
+    turnTimer,
     isLoading,
     awaitingNextHand,
   showdownResult,
@@ -182,10 +185,21 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   const addressToName = useMemo(() => {
     const mapping = new Map<string, string>();
     players.forEach((player) => {
-      mapping.set(player.address, player.name);
+      mapping.set(player.address.toLowerCase(), player.name);
     });
     return mapping;
   }, [players]);
+
+  const formatTurnCountdown = (seconds: number) => {
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const pendingOraclePlayerName = useMemo(() => {
+    if (!pendingOraclePlayer) return null;
+    return addressToName.get(pendingOraclePlayer) ?? `${pendingOraclePlayer.slice(0, 6)}…${pendingOraclePlayer.slice(-4)}`;
+  }, [addressToName, pendingOraclePlayer]);
   const winnersSet = useMemo(() => new Set(winnersList), [winnersList]);
   const potAmount = activeSummary ? activeSummary.pot : gameState?.pot ?? 0;
   const dealerWins = activeSummary ? activeSummary.dealerWins : (gameState?.phase === 'showdown' && winnersList.length === 0);
@@ -361,7 +375,6 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   const handleHitAction = () => actions.hit();
   const handleStandAction = () => actions.stand();
   const handleDoubleAction = () => actions.doubleDown();
-  const handleForceAdvanceAction = () => actions.forceAdvanceOnTimeout();
   const handleLeaveTableAction = () => actions.leaveTable();
   const handleCashOutAction = () => actions.cashOut();
 
@@ -413,12 +426,17 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     hasClaimedFreeChips
   ]);
 
+  const turnTimerDisplay = turnTimer ? formatTurnCountdown(turnTimer.secondsRemaining) : '—';
+
   const tableStats = useMemo(
     () => [
       { label: 'Table', value: `#${activeTableId.toString()}` },
       { label: 'Stage', value: phaseLabel },
       { label: 'Players', value: players.length.toString() },
       { label: 'Active', value: activePlayerName },
+      ...(gameState?.phase === 'player-turn' && turnTimer
+        ? [{ label: 'Turn Timer', value: turnTimerDisplay }]
+        : []),
       { label: 'Pot', value: potDisplay },
       { label: 'Min Bet', value: minBuyInDisplay },
       { label: 'Max Bet', value: maxBuyInDisplay }
@@ -428,6 +446,9 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       phaseLabel,
       players.length,
       activePlayerName,
+      gameState?.phase,
+      turnTimer,
+      turnTimerDisplay,
       potDisplay,
       minBuyInDisplay,
       maxBuyInDisplay
@@ -440,9 +461,18 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       return { label: 'Bust Confirmed', variant: 'waiting' as const };
     }
     if (connectedCanAct) return { label: 'Your Move', variant: 'active' as const };
+    if (gameState?.phase === 'betting' && isSeated && !awaitingNextHand) {
+      if (connectedPlayer && connectedPlayer.bet > 0) {
+        return { label: 'Bet Locked In', variant: 'waiting' as const };
+      }
+      return { label: 'Place Your Bet', variant: 'active' as const };
+    }
     if (oraclePending) {
+      if (oracleConfirmingBust) {
+        return { label: 'Confirming Bust', variant: 'waiting' as const };
+      }
       return {
-        label: oracleConfirmingBust ? 'Confirming Bust' : 'Oracle Processing',
+        label: oraclePendingForSelf ? 'Oracle Processing' : 'Waiting On Oracle',
         variant: 'waiting' as const
       };
     }
@@ -451,11 +481,14 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       return { label: 'Not Your Turn', variant: 'idle' as const };
     }
     if (disableActions) return { label: 'Locked', variant: 'locked' as const };
+    if (gameState?.phase === 'dealing') return { label: 'Dealing Cards', variant: 'waiting' as const };
     return { label: 'Standing By', variant: 'idle' as const };
   }, [
     awaitingNextHand,
     connectedCanAct,
+    connectedPlayer,
     oraclePending,
+    oraclePendingForSelf,
     oracleConfirmingBust,
     tableStuck,
     gameState?.phase,
@@ -465,22 +498,54 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   ]);
 
   const controlHelperMessage = useMemo(() => {
+    if (gameState?.phase === 'betting' && isSeated && !awaitingNextHand) {
+      if (connectedPlayer && connectedPlayer.bet > 0) {
+        return 'Your bet is in. Waiting for other players to wager before the hand is dealt.';
+      }
+      return 'Betting is open — enter your wager and press Bet.';
+    }
     if (oraclePending) {
-      return oracleConfirmingBust
-        ? 'The oracle is confirming the bust on-chain. The next player can act once this finishes.'
-        : 'The game oracle is fulfilling your last action. Hit, stand, and double unlock when processing finishes.';
+      if (oracleConfirmingBust) {
+        return 'The oracle is confirming the bust on-chain. The next player can act once this finishes.';
+      }
+      if (oraclePendingForSelf) {
+        return 'The game oracle is fulfilling your last action. Hit, stand, and double unlock when processing finishes.';
+      }
+      if (pendingOraclePlayerName) {
+        return `The oracle is processing ${pendingOraclePlayerName}'s action. Play controls unlock when it finishes.`;
+      }
+      return 'The oracle is processing the active action. Play controls unlock when it finishes.';
     }
     if (tableStuck) {
-      return 'All players have finished. The dealer step should begin automatically — use Force only if the table stays idle for over a minute.';
+      return 'All players have finished. The dealer step should begin automatically within about a minute if the oracle is delayed.';
     }
     if (connectedPlayer?.bust) {
       return 'You busted. The table advances automatically — no action needed.';
     }
     if (gameState?.phase === 'player-turn' && isSeated && !isPlayerTurn && !connectedPlayer?.bust) {
-      return 'Wait for the active player to finish their turn.';
+      const timerHint = turnTimer
+        ? ` Turn timer: ${formatTurnCountdown(turnTimer.secondsRemaining)}.`
+        : '';
+      return `Wait for the active player to finish their turn.${timerHint}`;
+    }
+    if (gameState?.phase === 'player-turn' && connectedCanAct && turnTimer) {
+      return `You have ${formatTurnCountdown(turnTimer.secondsRemaining)} before the oracle auto-stands your hand.`;
     }
     return undefined;
-  }, [oraclePending, oracleConfirmingBust, tableStuck, gameState?.phase, isSeated, isPlayerTurn, connectedPlayer?.bust]);
+  }, [
+    oraclePending,
+    oraclePendingForSelf,
+    oracleConfirmingBust,
+    pendingOraclePlayerName,
+    tableStuck,
+    gameState?.phase,
+    isSeated,
+    isPlayerTurn,
+    connectedPlayer,
+    connectedCanAct,
+    turnTimer,
+    awaitingNextHand
+  ]);
 
   const playControlPanelProps = {
     betInput,
@@ -492,7 +557,6 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     onHit: handleHitAction,
     onStand: handleStandAction,
     onDouble: handleDoubleAction,
-    onForceAdvance: handleForceAdvanceAction,
     connectedCanAct,
     canDouble,
     isPending: pendingAction !== null,
@@ -570,6 +634,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                     potAmount={potAmount}
                     awaitingReveal={gameState?.phase === 'dealer-turn' && !gameState?.dealer.cardsRevealed}
                     decryptState={dealerDecryptState as PlayerDecryptState}
+                    onRetryDecrypt={actions.retryDealerDecrypt}
                   />
                 </div>
 
@@ -595,7 +660,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
 
                 <div className="relative mt-2 rounded-3xl border border-white/5 bg-black/28 px-4 pb-5 pt-5 backdrop-blur sm:px-6">
                   {gameState?.phase === 'player-turn' && players.length > 0 && (
-                    <div className="mb-4 flex justify-center">
+                    <div className="mb-4 flex flex-col items-center gap-1">
                       <div
                         className={cn(
                           'rounded-full px-4 py-1 text-xs font-semibold uppercase tracking-[0.4em] shadow',
@@ -606,6 +671,18 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                       >
                         {connectedCanAct ? 'Your Turn' : `${activePlayerName} Acting`}
                       </div>
+                      {turnTimer && (
+                        <div
+                          className={cn(
+                            'rounded-full border px-3 py-0.5 text-[0.58rem] font-semibold uppercase tracking-[0.32em]',
+                            turnTimer.secondsRemaining <= 10
+                              ? 'border-rose-400/60 bg-rose-500/15 text-rose-200'
+                              : 'border-amber-300/40 bg-amber-400/10 text-amber-100'
+                          )}
+                        >
+                          Turn timer {formatTurnCountdown(turnTimer.secondsRemaining)}
+                        </div>
+                      )}
                     </div>
                   )}
                   <div

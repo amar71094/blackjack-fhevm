@@ -6,8 +6,10 @@ import Index from "./pages/Index";
 import Subscribe from "./pages/Subscribe";
 import NotFound from "./pages/NotFound";
 import Game from "./pages/Game";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const App = () => (
+  <ErrorBoundary>
   <TooltipProvider>
     <Toaster />
     <Sonner />
@@ -21,6 +23,7 @@ const App = () => (
       </Routes>
     </BrowserRouter>
   </TooltipProvider>
+  </ErrorBoundary>
 );
 
 export default App;
