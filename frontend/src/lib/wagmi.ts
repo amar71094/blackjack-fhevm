@@ -1,4 +1,5 @@
-import { http, createConfig } from 'wagmi';
+import { fallback, http, webSocket } from 'viem';
+import { createConfig } from 'wagmi';
 import { sepolia } from 'wagmi/chains';
 import { injected, walletConnect } from 'wagmi/connectors';
 import type { Connector } from 'wagmi';
@@ -12,7 +13,7 @@ const runtimeIcon = import.meta.env.VITE_APP_ICON_URL ?? 'https://cipherjack.xyz
 
 const walletConnectMetadata = {
   name: 'CipherJack Blackjack',
-  description: 'Encrypted blackjack powered by FHEVM.',
+  description: 'Private blackjack with real chip wagers.',
   url: runtimeUrl,
   icons: [runtimeIcon],
   redirect: {
@@ -45,11 +46,20 @@ const configuredConnectors: readonly Connector[] = [
 
 export const hasWalletConnect = Boolean(walletConnectConnector);
 
+const buildSepoliaTransport = () => {
+  if (!sepoliaRpcUrl) return http();
+  if (/alchemy\.com/i.test(sepoliaRpcUrl)) {
+    const wsUrl = sepoliaRpcUrl.replace(/^https:/i, 'wss:');
+    return fallback([webSocket(wsUrl), http(sepoliaRpcUrl)]);
+  }
+  return http(sepoliaRpcUrl);
+};
+
 export const wagmiConfig = createConfig({
   chains: [sepolia],
   connectors: configuredConnectors,
   transports: {
-    [sepolia.id]: sepoliaRpcUrl ? http(sepoliaRpcUrl) : http()
+    [sepolia.id]: buildSepoliaTransport()
   },
   ssr: false
 });

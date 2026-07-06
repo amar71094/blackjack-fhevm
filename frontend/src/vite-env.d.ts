@@ -29,6 +29,7 @@ interface ImportMetaEnv {
 	readonly VITE_FHE_INPUT_VERIFIER_ADDRESS?: `0x${string}`;
 	readonly VITE_FHE_DECRYPTION_ORACLE_ADDRESS?: `0x${string}`;
 	readonly VITE_FHE_INPUT_VERIFICATION_ADDRESS?: `0x${string}`;
+	readonly VITE_ORACLE_ACTIVITY_URL?: string;
 }
 
 interface ImportMeta {

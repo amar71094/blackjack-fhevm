@@ -25,7 +25,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background px-6 text-center">
           <h1 className="text-2xl font-bold text-foreground">Something went wrong</h1>
           <p className="max-w-md text-sm text-muted-foreground">
-            Refresh the page. If the issue persists, reconnect your wallet on Sepolia and ensure the oracle is running.
+            Try reloading the page. If the issue continues, reconnect your wallet and try again.
           </p>
           <button
             type="button"

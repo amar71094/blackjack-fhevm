@@ -84,7 +84,10 @@ export const PlayerSpot = ({
   const revealedTotal = renderedCardsRevealed
     ? renderedTotal ?? calculateHandValue(renderedHand)
     : null;
-  const isBusted = resolvePlayerBust(player, revealedTotal);
+  const isBusted = resolvePlayerBust(player, revealedTotal, {
+    cardsFullyRevealed: renderedCardsRevealed,
+    requireRevealedCards: isConnected
+  });
   const totalDisplay = revealedTotal ?? '??';
   const resultInfo = renderedCardsRevealed && player.result ? resultStyles[player.result] : null;
   const showDecryptNotice =
@@ -122,18 +125,17 @@ export const PlayerSpot = ({
           </div>
         </div>
       )}
-      <div className="flex w-full items-center justify-between gap-3">
-        <div className={cn(
-          'relative h-16 w-16 overflow-hidden rounded-full border-4 border-primary/40 bg-background/40 shadow-inner',
-          isBusted && 'opacity-60'
-        )}>
-          <img
-            src={playerAvatar}
-            alt={player.name}
-            className="h-full w-full object-cover"
-          />
+      <div className="relative z-20 flex w-full items-center justify-between gap-3">
+        <div className={cn('relative h-16 w-16 shrink-0', isBusted && 'opacity-60')}>
+          <div className="h-full w-full overflow-hidden rounded-full border-4 border-primary/40 bg-background/40 shadow-inner">
+            <img
+              src={playerAvatar}
+              alt={player.name}
+              className="h-full w-full object-cover"
+            />
+          </div>
           {player.blackjack && (
-            <div className="absolute -top-2 -right-2 flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-black text-primary-foreground shadow-lg">
+            <div className="absolute -top-2 -right-2 z-30 flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-black text-primary-foreground shadow-lg">
               BJ
             </div>
           )}

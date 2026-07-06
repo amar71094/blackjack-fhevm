@@ -17,7 +17,7 @@ const {
   resolveOutcome
 } = require('./gameEngine');
 const { acquireProcessLock, releaseProcessLock } = require('./atomicStore');
-const { encryptForRelayer } = require('./fheEncrypt');
+const { encryptForRelayer, getRelayerInstance } = require('./fheEncrypt');
 
 const PendingKindName = Object.fromEntries(
   Object.entries(PendingKind).map(([k, v]) => [v, k])
@@ -38,10 +38,15 @@ const GAS_BUMP_DEN = 100n;
 
 const { loadSessions, saveSessions } = require('./sessionStore');
 const { rememberDealSeed, lookupDealSeed } = require('./commitmentStore');
+const { recordHandHistoryFromContract } = require('./handHistoryRecord');
+const { startActivityServer } = require('./activityServer');
 const sessions = loadSessions();
 const tableWork = new Map();
 const tableBackoffUntil = new Map();
 let oracleTxChain = Promise.resolve();
+let cachedFeeData = null;
+let cachedFeeAt = 0;
+const FEE_CACHE_MS = 3_000;
 
 function messageFromError(err) {
   if (!err) return '';
@@ -102,9 +107,19 @@ async function assertPendingKind(contract, tableId, expectedKind) {
   return play;
 }
 
+async function getCachedFeeData(provider) {
+  const now = Date.now();
+  if (cachedFeeData && now - cachedFeeAt < FEE_CACHE_MS) {
+    return cachedFeeData;
+  }
+  cachedFeeData = await provider.getFeeData();
+  cachedFeeAt = now;
+  return cachedFeeData;
+}
+
 async function sendOracleTx(signer, txRequest, feeMultiplierNum = GAS_BUMP_NUM) {
   const provider = signer.provider;
-  const fee = await provider.getFeeData();
+  const fee = await getCachedFeeData(provider);
   const overrides = {};
   if (fee.maxFeePerGas) {
     overrides.maxFeePerGas = (fee.maxFeePerGas * feeMultiplierNum) / GAS_BUMP_DEN;
@@ -461,6 +476,12 @@ async function fulfillDealerPlay(contract, tableId, play, signer) {
     persistSessions();
     const ranks = session.getDealerRanks();
     console.log(`[oracle] dealer played table=${tableId} cards=${preview.before}->${ranks.length} total=${handTotal(ranks)}`);
+
+    const settlePlay = await readPendingPlay(contract, tableId);
+    if (settlePlay.pendingKind === PendingKind.Settle) {
+      console.log(`[oracle] chaining settle immediately table=${tableId}`);
+      await fulfillSettle(contract, tableId, settlePlay, signer);
+    }
   } catch (err) {
     const after = await readPendingPlay(contract, tableId);
     await recoverSessionIfNeeded(contract, tableId, after);
@@ -569,9 +590,19 @@ async function fulfillSettle(contract, tableId, play, signer) {
     payload.dealerBusted
   );
   const tx = await sendOracleTxSerialized(signer, populated);
-  await tx.wait();
+  const receipt = await tx.wait();
   sessions.delete(String(tableId));
   persistSessions();
+  void recordHandHistoryFromContract(contract, tableId, receipt.hash, CONTRACT_ADDRESS)
+    .then(() => {
+      console.log(`[oracle] recorded hand history table=${tableId}`);
+    })
+    .catch((historyErr) => {
+      console.warn(
+        `[oracle] hand history record failed table=${tableId}:`,
+        historyErr.shortMessage ?? historyErr.message ?? historyErr
+      );
+    });
   console.log(`[oracle] settled table=${tableId} tx=${tx.hash}`);
 }
 
@@ -647,12 +678,19 @@ async function handlePending(contract, tableId, signer) {
   return true;
 }
 
+const MAX_STEPS_PER_WAKE = Number(process.env.ORACLE_MAX_STEPS_PER_WAKE ?? 5);
+
 async function runTableWork(contract, tableId, signer) {
   const backoffUntil = tableBackoffUntil.get(tableId) ?? 0;
   if (Date.now() < backoffUntil) return;
 
   try {
-    await handlePending(contract, tableId, signer);
+    for (let step = 0; step < MAX_STEPS_PER_WAKE; step++) {
+      const didWork = await handlePending(contract, tableId, signer);
+      if (!didWork) break;
+      const play = await readPendingPlay(contract, tableId);
+      if (Number(play.pendingKind) === PendingKind.None) break;
+    }
     tableBackoffUntil.delete(tableId);
   } catch (err) {
     if (isBenignOracleError(err) || err.code === 'ORACLE_STALE_PENDING') {
@@ -675,16 +713,60 @@ async function runTableWork(contract, tableId, signer) {
   }
 }
 
+function wakeTable(contract, signer, tableId) {
+  if (tableWork.has(tableId)) return;
+  const work = runTableWork(contract, tableId, signer).finally(() => {
+    tableWork.delete(tableId);
+  });
+  tableWork.set(tableId, work);
+}
+
 async function pollTables(contract, signer) {
   const count = Number(await contract.getTablesCount());
+  const work = [];
   for (let id = 1; id <= count; id++) {
     if (tableWork.has(id)) continue;
-    const work = runTableWork(contract, id, signer).finally(() => {
+    const task = runTableWork(contract, id, signer).finally(() => {
       tableWork.delete(id);
     });
-    tableWork.set(id, work);
-    await work;
+    tableWork.set(id, task);
+    work.push(task);
   }
+  if (work.length > 0) {
+    await Promise.allSettled(work);
+  }
+}
+
+function httpToWsUrl(httpUrl) {
+  return httpUrl.replace(/^https:\/\//i, 'wss://').replace(/^http:\/\//i, 'ws://');
+}
+
+function startEventWatcher(contractAddress, abi, getSigner, onWake) {
+  const rpcUrl = rpcPool.currentUrl();
+  if (!rpcUrl) return null;
+
+  let wsProvider;
+  try {
+    wsProvider = new ethers.WebSocketProvider(httpToWsUrl(rpcUrl));
+  } catch (err) {
+    console.warn('[oracle] WebSocket unavailable — poll-only mode:', err.message ?? err);
+    return null;
+  }
+
+  const wsContract = new ethers.Contract(contractAddress, abi, wsProvider);
+  wsContract.on('OracleActionRequired', (tableId, kind) => {
+    const id = Number(tableId);
+    const kindName = PendingKindName[Number(kind)] ?? kind;
+    console.log(`[oracle] event OracleActionRequired table=${id} kind=${kindName}`);
+    onWake(id);
+  });
+
+  wsProvider.on('error', (err) => {
+    console.warn('[oracle] websocket error:', err?.message ?? err);
+  });
+
+  console.log(`[oracle] event watcher active via ${httpToWsUrl(rpcUrl)}`);
+  return { wsProvider, wsContract };
 }
 
 async function main() {
@@ -740,6 +822,23 @@ async function main() {
   console.log(`[oracle] polling contract=${CONTRACT_ADDRESS} signer=${signer.address}`);
   console.log(`[oracle] rpc=${rpcPool.currentUrl()} chainId=${network.chainId} interval=${POLL_INTERVAL_MS}ms`);
   console.log(`[oracle] rpc fallbacks=${rpcPool.urls.length}`);
+  console.log(`[oracle] max steps per wake=${MAX_STEPS_PER_WAKE}`);
+
+  getRelayerInstance()
+    .then(() => console.log('[oracle] FHE relayer pre-warmed'))
+    .catch((err) => {
+      console.warn('[oracle] FHE relayer pre-warm failed:', err.message ?? err);
+    });
+
+  const activityServer = startActivityServer();
+
+  const runtime = { contract, signer };
+
+  const onEventWake = (tableId) => {
+    wakeTable(runtime.contract, runtime.signer, tableId);
+  };
+
+  let eventWatcher = startEventWatcher(CONTRACT_ADDRESS, artifact.abi, () => runtime.signer, onEventWake);
 
   await pollTables(contract, signer);
 
@@ -750,6 +849,13 @@ async function main() {
         provider = rpcPool.getProvider();
         signer = new ethers.Wallet(PRIVATE_KEY, provider);
         contract = new ethers.Contract(CONTRACT_ADDRESS, artifact.abi, signer);
+        runtime.signer = signer;
+        runtime.contract = contract;
+        if (eventWatcher) {
+          eventWatcher.wsContract.removeAllListeners();
+          eventWatcher.wsProvider.destroy().catch(() => {});
+        }
+        eventWatcher = startEventWatcher(CONTRACT_ADDRESS, artifact.abi, () => signer, onEventWake);
       }
       console.error('[oracle] poll error:', err.shortMessage ?? err.message ?? err);
     });
@@ -757,6 +863,18 @@ async function main() {
 
   const shutdown = () => {
     clearInterval(timer);
+    if (eventWatcher) {
+      eventWatcher.wsContract.removeAllListeners();
+      eventWatcher.wsProvider.destroy().catch(() => {});
+    }
+    if (activityServer) {
+      activityServer.close(() => {
+        releaseProcessLock(ORACLE_LOCK_PATH);
+        console.log('[oracle] stopped');
+        process.exit(0);
+      });
+      return;
+    }
     releaseProcessLock(ORACLE_LOCK_PATH);
     console.log('[oracle] stopped');
     process.exit(0);

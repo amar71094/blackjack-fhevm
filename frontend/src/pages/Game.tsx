@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { BlackjackTable } from '@/components/blackjack/BlackjackTable';
+import { ensureFhevmInstance } from '@/lib/fhevm';
 
 const Game = () => {
   const params = useParams();
@@ -14,6 +15,12 @@ const Game = () => {
       return undefined;
     }
   }, [tableIdParam]);
+
+  useEffect(() => {
+    void ensureFhevmInstance().catch(() => {
+      // Pre-warm only — decrypt flow surfaces errors when cards are dealt.
+    });
+  }, []);
 
   return <BlackjackTable tableId={tableId} />;
 };

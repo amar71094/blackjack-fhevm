@@ -43,6 +43,7 @@ npm run sync-abi
 | `VITE_FHE_RPC_URL` | Relayer SDK network URL (can match Sepolia RPC) |
 | `VITE_WALLETCONNECT_PROJECT_ID` | WalletConnect project id |
 | `VITE_APP_PUBLIC_URL` | Deployed site URL (e.g. Vercel) |
+| `VITE_ORACLE_ACTIVITY_URL` | Oracle activity API (e.g. `http://127.0.0.1:4001`) |
 
 If deployer is not the oracle signer:
 
@@ -64,7 +65,9 @@ Startup must log:
 - `Signer ... is gameOracle` (no mismatch)
 - Polling interval
 
-Keep **one** oracle process running (enforced via `oracle/.oracle.lock`). Persist `oracle/.sessions.json` and `oracle/.commitment-seeds.json` across restarts.
+Keep **one** oracle process running (enforced via `oracle/.oracle.lock`). Persist `oracle/.sessions.json`, `oracle/.commitment-seeds.json`, and `oracle/.hand-history.json` across restarts.
+
+The oracle serves **table activity history** (last 100 hands per table) at `http://127.0.0.1:4001/tables/:id/activity`. Set `ORACLE_ACTIVITY_HOST=0.0.0.0` for remote frontends and point `VITE_ORACLE_ACTIVITY_URL` at that host.
 
 The oracle **auto-advances timed-out player turns** (calls `forceAdvanceOnTimeout` after 60s) — no manual “Force Advance” button in the UI.
 
@@ -97,6 +100,6 @@ Production hosting must serve COOP/COEP headers (see `frontend/vercel.json`).
 
 ## Security
 
-- Never commit `.env`, `oracle/.sessions.json`, or `oracle/.commitment-seeds.json`
+- Never commit `.env`, `oracle/.sessions.json`, `oracle/.commitment-seeds.json`, or `oracle/.hand-history.json`
 - Rotate any key that was ever shared or committed
 - Use a dedicated `ORACLE_PRIVATE_KEY` in production (do not set `ALLOW_DEPLOYER_ORACLE_KEY`)

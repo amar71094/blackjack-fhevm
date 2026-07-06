@@ -34,14 +34,36 @@ import {
 } from '@/lib/decryptionSignature';
 import { devDebug, devError, devLog, devWarn } from '@/lib/devLog';
 import { friendlyRevertMessage, writeBlackjackContract } from '@/lib/contractWrite';
+import { validateBuyChipsPreflight, validateWithdrawChipsPreflight } from '@/lib/economyHelpers';
+import {
+  describeUserFacingError,
+  extractErrorMessage,
+  getActionErrorTitle,
+  logTechnicalError,
+  shortenTxHash
+} from '@/lib/userMessages';
 import { waitForTxReceipt } from '@/lib/txReceipt';
+import { fetchTableActivity, getTableActivityBaseUrl } from '@/lib/tableActivityApi';
+import { mergeLatestHandActivity, type TableActivityHand } from '@/lib/tableActivityStore';
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 const DEFAULT_TABLE_ID = 1n;
-const TABLE_POLL_INTERVAL = 15_000;
-const PLAYER_POLL_INTERVAL = 30_000;
-const TURN_POLL_INTERVAL = 12_000;
-const WALLET_POLL_INTERVAL = 45_000;
+const TABLE_POLL_IDLE_INTERVAL = 45_000;
+const TABLE_POLL_ACTIVE_INTERVAL = 2_000;
+const TURN_POLL_IDLE_INTERVAL = 45_000;
+const TURN_POLL_ACTIVE_INTERVAL = 2_000;
+const PLAYER_POLL_INTERVAL = 45_000;
+const WALLET_POLL_INTERVAL = 60_000;
 const CLAIM_POLL_INTERVAL = 120_000;
+const AGGRESSIVE_POLL_DURATION_MS = 90_000;
+
+type OptimisticOverlay = {
+  bet?: bigint;
+  pendingKind?: PendingKind;
+  pendingPlayer?: string;
+  hasActed?: boolean;
+};
 
 const toLower = (value?: string | null) => value?.toLowerCase();
 
@@ -104,14 +126,18 @@ export interface BlackjackGameData {
   gameState?: GameState;
   connectedPlayer?: Player;
   walletChips?: bigint;
+  withdrawableChips?: bigint;
   hasClaimedFreeChips?: boolean;
   playerTableId?: bigint;
   isSeated: boolean;
   isPlayerTurn?: boolean;
   oraclePending: boolean;
   oraclePendingForSelf: boolean;
+  pendingOracleKind: PendingKind;
   pendingOraclePlayer: string | null;
   oracleConfirmingBust: boolean;
+  tableActivity: TableActivityHand[];
+  refreshTableActivity: () => Promise<void>;
   tableStuck: boolean;
   turnTimer: { secondsRemaining: number; turnTimeoutSeconds: number } | null;
   winners: WinnerEventPayload | null;
@@ -156,7 +182,12 @@ export const useBlackjackGame = (
   const { data: walletClient } = useWalletClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [isWriting, setIsWriting] = useState(false);
+  const [optimisticOverlay, setOptimisticOverlay] = useState<OptimisticOverlay | null>(null);
+  const [aggressivePollUntil, setAggressivePollUntil] = useState(0);
+  const [pollMode, setPollMode] = useState<'idle' | 'active'>('idle');
   const [winners, setWinners] = useState<WinnerEventPayload | null>(null);
+  const [tableActivity, setTableActivity] = useState<TableActivityHand[]>([]);
+
   const [acknowledgedResultTimestamp, setAcknowledgedResultTimestamp] = useState<number>(0);
   type CachedDecryptedHand = { cards: Card[]; total: number; signature: string };
 
@@ -207,6 +238,16 @@ export const useBlackjackGame = (
   const shouldPoll = !supportsFilters;
   const eventsEnabled = Boolean(contractAddress) && supportsFilters;
   const readEnabled = Boolean(contractAddress);
+  const tablePollInterval = shouldPoll
+    ? pollMode === 'active'
+      ? TABLE_POLL_ACTIVE_INTERVAL
+      : TABLE_POLL_IDLE_INTERVAL
+    : false;
+  const turnPollInterval = shouldPoll
+    ? pollMode === 'active'
+      ? TURN_POLL_ACTIVE_INTERVAL
+      : TURN_POLL_IDLE_INTERVAL
+    : false;
 
   const {
     data: tablesCount,
@@ -216,7 +257,7 @@ export const useBlackjackGame = (
     functionName: 'getTablesCount',
     query: {
       enabled: readEnabled,
-      refetchInterval: shouldPoll ? TABLE_POLL_INTERVAL : false
+      refetchInterval: tablePollInterval
     }
   });
 
@@ -232,7 +273,7 @@ export const useBlackjackGame = (
     args: [tableId] as const,
     query: {
       enabled: readEnabled && hasTable,
-      refetchInterval: shouldPoll ? TABLE_POLL_INTERVAL : false,
+      refetchInterval: tablePollInterval,
       retry: 1
     }
   });
@@ -246,7 +287,7 @@ export const useBlackjackGame = (
     args: [tableId] as const,
     query: {
       enabled: readEnabled && hasTable,
-      refetchInterval: shouldPoll ? TABLE_POLL_INTERVAL : false,
+      refetchInterval: tablePollInterval,
       retry: 1
     }
   });
@@ -257,6 +298,19 @@ export const useBlackjackGame = (
   } = useReadContract({
     ...blackjackContract,
     functionName: 'playerChips',
+    args: walletAddress ? [walletAddress] as const : undefined,
+    query: {
+      enabled: readEnabled && Boolean(walletAddress),
+      refetchInterval: shouldPoll ? WALLET_POLL_INTERVAL : false
+    }
+  });
+
+  const {
+    data: withdrawableChips,
+    refetch: refetchWithdrawableChips
+  } = useReadContract({
+    ...blackjackContract,
+    functionName: 'withdrawableChips',
     args: walletAddress ? [walletAddress] as const : undefined,
     query: {
       enabled: readEnabled && Boolean(walletAddress),
@@ -299,7 +353,7 @@ export const useBlackjackGame = (
     args: walletAddress ? [tableId, walletAddress] as const : undefined,
     query: {
       enabled: readEnabled && Boolean(walletAddress) && hasTable,
-      refetchInterval: shouldPoll ? TURN_POLL_INTERVAL : false
+      refetchInterval: turnPollInterval
     }
   });
 
@@ -312,6 +366,34 @@ export const useBlackjackGame = (
   });
 
   const [turnTimerTick, setTurnTimerTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (aggressivePollUntil <= Date.now()) return;
+    const delay = aggressivePollUntil - Date.now();
+    const timer = window.setTimeout(() => setAggressivePollUntil(0), delay);
+    return () => window.clearTimeout(timer);
+  }, [aggressivePollUntil]);
+
+  useEffect(() => {
+    let chainPending = false;
+    if (rawTable) {
+      const playTable = normalizePlayTable(rawTable);
+      chainPending = Number(playTable.pendingKind) !== PendingKind.None;
+    }
+    const active =
+      pendingAction !== null ||
+      isWriting ||
+      optimisticOverlay !== null ||
+      aggressivePollUntil > Date.now() ||
+      chainPending;
+    setPollMode(active ? 'active' : 'idle');
+  }, [
+    rawTable,
+    pendingAction,
+    isWriting,
+    optimisticOverlay,
+    aggressivePollUntil
+  ]);
 
   const table = useMemo(() => {
     if (!rawTable) return undefined;
@@ -567,6 +649,27 @@ const playerHandSignature = useMemo(() => {
 
   const lastHandSummary = rawShowdownSummary;
 
+  const refreshTableActivity = useCallback(async () => {
+    try {
+      const activity = await fetchTableActivity(tableId);
+      setTableActivity(activity);
+    } catch (err) {
+      logTechnicalError('[BlackjackGame] table activity fetch failed', err, {
+        tableId: tableId.toString(),
+        baseUrl: getTableActivityBaseUrl()
+      });
+    }
+  }, [tableId]);
+
+  useEffect(() => {
+    void refreshTableActivity();
+  }, [refreshTableActivity]);
+
+  const displayTableActivity = useMemo(
+    () => mergeLatestHandActivity(tableActivity, table?.lastHandResult),
+    [tableActivity, table?.lastHandResult]
+  );
+
   useEffect(() => {
     if (!table) {
       setAcknowledgedResultTimestamp(0);
@@ -778,7 +881,11 @@ const playerHandSignature = useMemo(() => {
         }
 
         if (fetchError) {
-          devError('[BlackjackGame] Failed to load encrypted handles', fetchError);
+          logTechnicalError('[BlackjackGame] Failed to load encrypted handles', fetchError, {
+            tableId: tableId.toString(),
+            player: lower,
+            handSignature: currentHandSignature
+          });
           if (!cancelled) {
             if (playerDecryptErrorRef.current !== currentHandSignature) {
               playerDecryptErrorRef.current = currentHandSignature;
@@ -979,7 +1086,12 @@ const playerHandSignature = useMemo(() => {
           }
         }
       } catch (error) {
-        devError('[BlackjackGame] Failed to decrypt player hand', error);
+        logTechnicalError('[BlackjackGame] Failed to decrypt player hand', error, {
+          tableId: tableId.toString(),
+          player: lower,
+          handSignature: currentHandSignature,
+          expectedCardCount
+        });
         if (!cancelled) {
           setDecryptedHands((prev) => {
             if (!(lower in prev)) return prev;
@@ -1169,7 +1281,10 @@ const playerHandSignature = useMemo(() => {
         }
 
         if (fetchError) {
-          devError('[BlackjackGame] Failed to load dealer encrypted handles', fetchError);
+          logTechnicalError('[BlackjackGame] Failed to load dealer encrypted handles', fetchError, {
+            tableId: tableId.toString(),
+            resultTimestamp: latestResultTimestamp
+          });
           if (!cancelled) {
             if (dealerDecryptErrorRef.current !== latestResultTimestamp) {
               dealerDecryptErrorRef.current = latestResultTimestamp;
@@ -1288,9 +1403,12 @@ const playerHandSignature = useMemo(() => {
           }
         }
       } catch (error) {
-        devError('[BlackjackGame] Failed to decrypt dealer hand', error);
+        logTechnicalError('[BlackjackGame] Failed to decrypt dealer hand', error, {
+          tableId: tableId.toString(),
+          resultTimestamp: latestResultTimestamp
+        });
         if (!cancelled) {
-          const errorMessage = (error as Error)?.message ?? 'Unknown error';
+          const errorMessage = extractErrorMessage(error);
           const awaitingPublicDecrypt =
             /not publicly decryptable yet|not_ready_for_decryption/i.test(errorMessage);
 
@@ -1581,13 +1699,52 @@ const playerHandSignature = useMemo(() => {
       );
       const chainBusted = Boolean(tablePlayer?.busted);
 
+      let bet = player.bet;
+      let hasActed = player.hasActed;
+      let isActive = player.isActive;
+      if (isConnectedPlayer && optimisticOverlay) {
+        if (optimisticOverlay.bet !== undefined) {
+          bet = Number(optimisticOverlay.bet);
+        }
+        if (optimisticOverlay.hasActed) {
+          hasActed = true;
+        }
+      }
+
+      const chainPendingKind = table ? (Number(table.pendingKind) as PendingKind) : PendingKind.None;
+      const effectivePendingKind =
+        chainPendingKind !== PendingKind.None
+          ? chainPendingKind
+          : optimisticOverlay?.pendingKind ?? PendingKind.None;
+      const tablePendingPlayer = table?.pendingPlayer?.toLowerCase();
+      const effectivePendingPlayer =
+        tablePendingPlayer && tablePendingPlayer !== ZERO_ADDRESS
+          ? tablePendingPlayer
+          : optimisticOverlay?.pendingPlayer ?? null;
+      const pendingDealForPlayer =
+        isConnectedPlayer &&
+        effectivePendingKind !== PendingKind.None &&
+        (effectivePendingKind === PendingKind.Hit || effectivePendingKind === PendingKind.DoubleDown) &&
+        effectivePendingPlayer === lower;
+
+      const bustOptions = {
+        chainBusted,
+        cardsFullyRevealed: cardsRevealed,
+        pendingDealForPlayer,
+        requireRevealedCards: isConnectedPlayer
+      };
+      const resolvedBust = resolvePlayerBust({ ...player, chainBusted }, resolvedTotal, bustOptions);
+
       return {
         ...player,
+        bet,
+        hasActed,
+        isActive,
         displayHand,
         displayTotal: resolvedTotal,
         cardsRevealed,
-        bust: resolvePlayerBust({ ...player, chainBusted }, resolvedTotal),
-        stand: player.stand && !resolvePlayerBust({ ...player, chainBusted }, resolvedTotal)
+        bust: resolvedBust,
+        stand: player.stand && !resolvedBust
       };
     });
 
@@ -1630,7 +1787,8 @@ const playerHandSignature = useMemo(() => {
     playerDecryptedHand,
     connectedDecryptedHandState,
     playerHandSignature,
-    table
+    table,
+    optimisticOverlay
   ]);
 
   const gameState = decoratedGameState;
@@ -1650,14 +1808,18 @@ const playerHandSignature = useMemo(() => {
   const hasActiveSeat = useMemo(() => Boolean(currentTableId && currentTableId !== 0n), [currentTableId]);
 
   const pendingOracleKind = useMemo(() => {
-    if (!table) return PendingKind.None;
-    return Number(table.pendingKind) as PendingKind;
-  }, [table]);
+    const chainKind = table ? (Number(table.pendingKind) as PendingKind) : PendingKind.None;
+    if (chainKind !== PendingKind.None) return chainKind;
+    return optimisticOverlay?.pendingKind ?? PendingKind.None;
+  }, [table, optimisticOverlay]);
 
   const pendingOraclePlayer = useMemo(() => {
-    if (!table?.pendingPlayer) return null;
-    return table.pendingPlayer.toLowerCase();
-  }, [table?.pendingPlayer]);
+    if (table?.pendingPlayer) {
+      const lower = table.pendingPlayer.toLowerCase();
+      if (lower !== ZERO_ADDRESS) return lower;
+    }
+    return optimisticOverlay?.pendingPlayer ?? null;
+  }, [table?.pendingPlayer, optimisticOverlay]);
 
   const oraclePending = useMemo(() => pendingOracleKind !== PendingKind.None, [pendingOracleKind]);
 
@@ -1667,7 +1829,7 @@ const playerHandSignature = useMemo(() => {
   }, [oraclePending, pendingOraclePlayer, lowerWalletAddress]);
 
   const turnTimer = useMemo(() => {
-    if (!table || table.phase !== GamePhase.PlayerTurns) return null;
+    if (!table || table.phase !== GamePhase.PlayerTurns || oraclePending) return null;
     const waitingPlayer = table.players.some(
       (player) => player.bet > 0n && player.isActive && !player.hasActed && !player.busted
     );
@@ -1677,20 +1839,19 @@ const playerHandSignature = useMemo(() => {
     const deadlineMs = (lastActivity + turnTimeoutSeconds) * 1_000;
     const secondsRemaining = Math.max(0, Math.ceil((deadlineMs - turnTimerTick) / 1_000));
     return { secondsRemaining, turnTimeoutSeconds };
-  }, [table, turnTimeoutRaw, turnTimerTick]);
+  }, [table, turnTimeoutRaw, turnTimerTick, oraclePending]);
 
   const oracleConfirmingBust = useMemo(() => {
-    if (!gameState || !oraclePending) return false;
+    if (!oraclePending || !table) return false;
     if (pendingOracleKind !== PendingKind.Hit && pendingOracleKind !== PendingKind.DoubleDown) {
       return false;
     }
     if (!pendingOraclePlayer) return false;
-    return gameState.players.some(
-      (player) =>
-        player.address.toLowerCase() === pendingOraclePlayer &&
-        player.bust
+    const tablePlayer = table.players.find(
+      (entry) => entry.addr.toLowerCase() === pendingOraclePlayer
     );
-  }, [gameState, oraclePending, pendingOracleKind, pendingOraclePlayer]);
+    return Boolean(tablePlayer?.busted);
+  }, [oraclePending, pendingOracleKind, pendingOraclePlayer, table]);
 
   const tableStuck = useMemo(() => {
     if (!table || table.phase !== GamePhase.PlayerTurns || oraclePending) return false;
@@ -1731,7 +1892,7 @@ const playerHandSignature = useMemo(() => {
       pendingOraclePlayer === lowerWalletAddress &&
       (pendingOracleKind === PendingKind.Hit || pendingOracleKind === PendingKind.DoubleDown)
     ) {
-      toast.info('Waiting for the oracle to confirm your last card.');
+      toast.info('Your last card is being dealt. Please wait.');
       return false;
     }
     if (!effectivePlayerTurn) {
@@ -1764,6 +1925,7 @@ const playerHandSignature = useMemo(() => {
     await Promise.allSettled([
       refetchTablesCount(),
       refetchWalletChips(),
+      refetchWithdrawableChips(),
       refetchClaimStatus(),
       refetchPlayerTable()
     ]);
@@ -1772,7 +1934,8 @@ const playerHandSignature = useMemo(() => {
     refetchClaimStatus,
     refetchPlayerTable,
     refetchTablesCount,
-    refetchWalletChips
+    refetchWalletChips,
+    refetchWithdrawableChips
   ]);
 
   // Batch refetch helper for post-transaction refreshes.
@@ -1781,11 +1944,13 @@ const playerHandSignature = useMemo(() => {
   }, [refetchCore, refetchAncillary]);
 
   const scheduleCoreRefetch = useCallback(() => {
-    if (refetchTimerRef.current) return;
+    if (refetchTimerRef.current) {
+      clearTimeout(refetchTimerRef.current);
+    }
     refetchTimerRef.current = setTimeout(() => {
       refetchTimerRef.current = null;
       void refetchCore();
-    }, 120);
+    }, 50);
   }, [refetchCore]);
 
   useEffect(() => {
@@ -1799,12 +1964,8 @@ const playerHandSignature = useMemo(() => {
 
   // Standardised toast/error logging so all writes behave consistently.
   const handleError = useCallback((error: unknown, fallback: string) => {
-    devError(error);
-    const description =
-      (error as { shortMessage?: string })?.shortMessage ||
-      (error as Error)?.message ||
-      'Unknown error';
-    toast.error(fallback, { description });
+    logTechnicalError(fallback, error);
+    toast.error(fallback, { description: describeUserFacingError(error) });
   }, []);
 
   // Ensure every action has both signer and contract configured.
@@ -1814,11 +1975,15 @@ const playerHandSignature = useMemo(() => {
       return false;
     }
     if (!contractAddress) {
-      toast.error('Blackjack contract address is not configured.');
+      logTechnicalError(
+        '[BlackjackGame] Blackjack contract address is not configured',
+        new Error('VITE_BLACKJACK_CONTRACT is not set')
+      );
+      toast.error('CipherJack is temporarily unavailable. Please try again later.');
       return false;
     }
     if (chainId !== sepolia.id) {
-      toast.error('Switch your wallet to Sepolia to play CipherJack.');
+      toast.error('Switch your wallet to the Sepolia test network to play.');
       return false;
     }
     return true;
@@ -1882,6 +2047,41 @@ const playerHandSignature = useMemo(() => {
     [refetchAll, refetchCore, supportsFilters]
   );
 
+  const applyOptimisticAction = useCallback(
+    (functionName: string, args: readonly unknown[]) => {
+      if (!lowerWalletAddress) return;
+      setAggressivePollUntil(Date.now() + AGGRESSIVE_POLL_DURATION_MS);
+
+      if (functionName === 'placeBet') {
+        const amount = args[1] as bigint | undefined;
+        setOptimisticOverlay({ bet: amount });
+        return;
+      }
+      if (functionName === 'hit') {
+        setOptimisticOverlay({
+          pendingKind: PendingKind.Hit,
+          pendingPlayer: lowerWalletAddress
+        });
+        return;
+      }
+      if (functionName === 'stand') {
+        setOptimisticOverlay({
+          pendingKind: PendingKind.Stand,
+          pendingPlayer: lowerWalletAddress,
+          hasActed: true
+        });
+        return;
+      }
+      if (functionName === 'doubleDown') {
+        setOptimisticOverlay({
+          pendingKind: PendingKind.DoubleDown,
+          pendingPlayer: lowerWalletAddress
+        });
+      }
+    },
+    [lowerWalletAddress]
+  );
+
   // Shared execution helper around wagmi's `writeContractAsync`.
   const execute = useCallback(
     async (
@@ -1896,7 +2096,7 @@ const playerHandSignature = useMemo(() => {
       const { functionName, args = [], value } = params;
       if (!requireWallet()) return false;
       if (!publicClient || !walletClient) {
-        toast.error('Wallet client is not ready — reconnect your wallet and retry.');
+        toast.error('Your wallet is not ready. Reconnect and try again.');
         return false;
       }
       try {
@@ -1911,24 +2111,33 @@ const playerHandSignature = useMemo(() => {
           args: args as never,
           value
         });
+        applyOptimisticAction(String(functionName), args);
         toast.message('Transaction submitted', {
-          description: hash
+          description: shortenTxHash(hash)
         });
         devLog('[BlackjackGame] writeContract submitted', { functionName, hash });
+        void refetchCore();
         await waitForReceipt(hash);
         devLog('[BlackjackGame] writeContract confirmed', { functionName, hash });
         if (successMessage) {
           toast.success(successMessage);
         }
         await refetchAfterWrite(refreshMode);
+        setOptimisticOverlay(null);
         return true;
       } catch (error) {
-        devError('[BlackjackGame] writeContract error', { functionName, error });
+        setOptimisticOverlay(null);
+        logTechnicalError(`[BlackjackGame] writeContract error (${String(functionName)})`, error, {
+          functionName,
+          args,
+          value
+        });
+        const title = getActionErrorTitle(String(functionName));
         const friendly = friendlyRevertMessage(error);
         if (friendly) {
-          toast.error(`Failed to execute ${String(functionName)}`, { description: friendly });
+          toast.error(title, { description: friendly });
         } else {
-          handleError(error, `Failed to execute ${String(functionName)}`);
+          handleError(error, title);
         }
         return false;
       } finally {
@@ -1937,10 +2146,12 @@ const playerHandSignature = useMemo(() => {
       }
     },
     [
+      applyOptimisticAction,
       contractAddress,
       handleError,
       publicClient,
       refetchAfterWrite,
+      refetchCore,
       requireWallet,
       waitForReceipt,
       walletClient
@@ -1958,9 +2169,24 @@ const playerHandSignature = useMemo(() => {
           toast.error('Send a positive amount of ETH to buy chips.');
           return false;
         }
-        if (hasActiveSeat) {
-          toast.error('Leave your active table or cash out before buying chips.');
+        if (!publicClient || !walletAddress || !contractAddress) {
+          toast.error('Your wallet is not ready. Reconnect and try again.');
           return false;
+        }
+        try {
+          const preflightError = await validateBuyChipsPreflight(
+            publicClient,
+            contractAddress,
+            walletAddress,
+            weiAmount,
+            currentTableId as bigint | undefined
+          );
+          if (preflightError) {
+            toast.error(preflightError);
+            return false;
+          }
+        } catch (error) {
+          logTechnicalError('[BlackjackGame] buyChips preflight failed', error);
         }
         return execute({ functionName: 'buyChips', args: [], value: weiAmount }, 'Chips purchased', 'all');
       },
@@ -1969,13 +2195,25 @@ const playerHandSignature = useMemo(() => {
           toast.error('Enter a chip amount greater than zero.');
           return false;
         }
-        if (hasActiveSeat) {
-          toast.error('Leave your active table or cash out before withdrawing chips.');
+        if (!publicClient || !walletAddress || !contractAddress) {
+          toast.error('Your wallet is not ready. Reconnect and try again.');
           return false;
         }
-        if (walletChipBalance !== undefined && chipAmount > walletChipBalance) {
-          toast.error('Not enough chips in your wallet.');
-          return false;
+        try {
+          const preflightError = await validateWithdrawChipsPreflight(
+            publicClient,
+            contractAddress,
+            walletAddress,
+            chipAmount,
+            currentTableId as bigint | undefined,
+            walletChipBalance
+          );
+          if (preflightError) {
+            toast.error(preflightError);
+            return false;
+          }
+        } catch (error) {
+          logTechnicalError('[BlackjackGame] withdrawChips preflight failed', error);
         }
         return execute(
           { functionName: 'withdrawChips', args: [chipAmount] as const },
@@ -2070,15 +2308,19 @@ const playerHandSignature = useMemo(() => {
     }),
     [
       awaitingNextHand,
+      contractAddress,
+      currentTableId,
       execute,
       guardPlayerAction,
       hasActiveSeat,
       latestResultTimestamp,
+      publicClient,
       resetDecryption,
       retryDealerDecrypt,
       retryPlayerDecrypt,
       table,
       tableId,
+      walletAddress,
       walletChipBalance
     ]
   );
@@ -2128,6 +2370,7 @@ const playerHandSignature = useMemo(() => {
     onLogs: (logs) => {
       devLog('[BlackjackGame] HandResultStored event', { tableId, logs });
       scheduleCoreRefetch();
+      void refreshTableActivity();
     }
   });
 
@@ -2189,7 +2432,7 @@ const playerHandSignature = useMemo(() => {
         if (!timedOut) continue;
         const short = `${timedOut.slice(0, 6)}…${timedOut.slice(-4)}`;
         const isSelf = lowerWalletAddress && timedOut.toLowerCase() === lowerWalletAddress;
-        if (reason === 'timeout-stand') {
+        if (reason === 'timeout-stand' || reason === 'timeout') {
           toast.info(
             isSelf
               ? 'Your turn timed out — you were auto-stood.'
@@ -2198,8 +2441,8 @@ const playerHandSignature = useMemo(() => {
         } else {
           toast.info(
             isSelf
-              ? 'Your turn was auto-advanced by the oracle.'
-              : `${short}'s turn was auto-advanced (${reason}).`
+              ? 'Your turn was auto-advanced.'
+              : `${short}'s turn was auto-advanced.`
           );
         }
       }
@@ -2215,14 +2458,18 @@ const playerHandSignature = useMemo(() => {
     gameState,
     connectedPlayer,
     walletChips: walletChipBalance,
+    withdrawableChips: withdrawableChips as bigint | undefined,
     hasClaimedFreeChips: typeof hasClaimed === 'boolean' ? hasClaimed : undefined,
     playerTableId: currentTableId as bigint | undefined,
     isSeated,
     isPlayerTurn: effectivePlayerTurn,
     oraclePending,
     oraclePendingForSelf,
+    pendingOracleKind,
     pendingOraclePlayer,
     oracleConfirmingBust,
+    tableActivity: displayTableActivity,
+    refreshTableActivity,
     tableStuck,
     turnTimer,
     winners,

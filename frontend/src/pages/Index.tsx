@@ -86,7 +86,7 @@ const Index = () => {
   const navigate = useNavigate();
   const { address } = useAccount();
   const walletConnected = Boolean(address);
-  const { tables, isLoading, pendingAction, actions, playerTableId, walletChips, hasClaimedFreeChips } = useBlackjackLobby();
+  const { tables, isLoading, pendingAction, actions, playerTableId, walletChips, withdrawableChips, hasClaimedFreeChips } = useBlackjackLobby();
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinTableId, setJoinTableId] = useState<bigint | null>(null);
@@ -109,6 +109,10 @@ const Index = () => {
   }, [playerTableId, joinTableId]);
 
   const walletBalanceDisplay = useMemo(() => formatChips(walletChips ?? 0n), [walletChips]);
+  const withdrawableDisplay = useMemo(
+    () => (withdrawableChips !== undefined ? formatChips(withdrawableChips) : undefined),
+    [withdrawableChips]
+  );
   const claimFreeChipsAction = actions.claimFreeChips;
   const buyChipsAction = actions.buyChips;
   const withdrawChipsAction = actions.withdrawChips;
@@ -134,6 +138,7 @@ const Index = () => {
   const headerWalletPanel = useMemo(() => (
     {
       walletBalance: walletBalanceDisplay,
+      withdrawableBalance: withdrawableDisplay,
       pending: pendingAction !== null,
       onClaimFreeChips: claimFreeChipsAction,
       onBuyChips: handleBuyChips,
@@ -142,6 +147,7 @@ const Index = () => {
     }
   ), [
     walletBalanceDisplay,
+    withdrawableDisplay,
     pendingAction,
     claimFreeChipsAction,
     handleBuyChips,
@@ -198,13 +204,13 @@ const Index = () => {
         <section className="grid gap-10 lg:grid-cols-[minmax(0,1.05fr),380px]">
           <div className="space-y-6">
             <Badge variant="secondary" className="bg-primary/20 text-primary-foreground/90">
-              Encrypted Blackjack Onchain
+              Private Hands, Real Stakes
             </Badge>
             <h1 className="text-4xl font-black tracking-tight text-white sm:text-5xl lg:text-6xl">
-              CipherJack: Fully Encrypted Blackjack Powered by Zama FHE
+              CipherJack: Private Blackjack on the Blockchain
             </h1>
             <p className="max-w-2xl text-base text-white/80 sm:text-lg">
-              Play blackjack on Sepolia with Zama FHE user-decrypt for your cards, on-chain wagers, and verifiable settlement. v1 stores encrypted handles alongside clear game state for fast rule execution.
+              Play blackjack with private hands, real chip wagers, and instant settlement. Only you can see your cards until the showdown.
             </p>
             <div className="flex flex-wrap gap-3">
               <Button
@@ -232,18 +238,18 @@ const Index = () => {
             <div className="grid gap-4 sm:grid-cols-2">
               <LobbyFeature
                 icon={ShieldCheck}
-                title="FHE Card Decrypt"
-                description="Your hand is mirrored as encrypted on-chain handles; only your wallet can user-decrypt them via Zama's relayer SDK."
+                title="Private Hands"
+                description="Your cards stay hidden from other players. Only your wallet can reveal them to you."
               />
               <LobbyFeature
                 icon={Zap}
-                title="Real-Time Flow"
-                description="Low latency gameplay with Wagmi hooks, live events, and instant onchain state syncing."
+                title="Real-Time Play"
+                description="Smooth, live gameplay with instant table updates and fast turn progression."
               />
               <LobbyFeature
                 icon={Cpu}
-                title="Zama FHE Powered"
-                description="Card secrets stay encrypted end-to-end using Zama's fully homomorphic encryption rollups."
+                title="Fair Settlement"
+                description="Every wager and payout is settled automatically — no house account holding your chips."
               />
             </div>
           </div>
@@ -348,7 +354,7 @@ const Index = () => {
             <div>
               <h2 className="text-2xl font-semibold text-white">Why CipherJack?</h2>
               <p className="text-sm text-white/70">
-                A luxury blackjack experience blending cinematic UI, encrypted gameplay, and fully onchain settlement.
+                A luxury blackjack experience with private hands, cinematic UI, and instant chip settlement.
               </p>
             </div>
             <Button
@@ -363,10 +369,10 @@ const Index = () => {
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Card className="border-primary/20 bg-black/40">
               <CardHeader>
-                <CardTitle className="text-lg text-white">Encrypted Hands</CardTitle>
+                <CardTitle className="text-lg text-white">Private Hands</CardTitle>
               </CardHeader>
               <CardContent className="text-sm text-white/70">
-                Dealer and player cards stay encrypted even while in play. Zama FHE keeps hand values private until the showdown reveal.
+                Your cards stay hidden from other players until the showdown. Hand values remain private throughout each round.
               </CardContent>
             </Card>
             <Card className="border-primary/20 bg-black/40">
@@ -395,7 +401,7 @@ const Index = () => {
           <DialogHeader>
             <DialogTitle>Create a New Table</DialogTitle>
             <DialogDescription className="text-white/60">
-              Set stake limits for your encrypted blackjack lounge.
+              Set stake limits for your blackjack table.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">

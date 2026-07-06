@@ -15,9 +15,15 @@ import {
 import { sepolia } from 'wagmi/chains';
 import { hasWalletConnect, walletConnectConnector } from '@/lib/wagmi';
 import { clearAllStoredSignatures } from '@/lib/decryptionSignature';
+import {
+  describeNetworkSwitchError,
+  describeWalletConnectError,
+  logTechnicalError
+} from '@/lib/userMessages';
 
 export interface WalletPanelConfig {
   walletBalance: string;
+  withdrawableBalance?: string;
   tableStack?: string;
   availableForBet?: string;
   pending?: boolean;
@@ -83,6 +89,18 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
     }));
     if (import.meta.env.DEV) console.info('[WalletControls] available connectors', entries);
   }, [connectorMap]);
+
+  useEffect(() => {
+    if (connectError) {
+      logTechnicalError('[WalletControls] Wallet connect failed', connectError);
+    }
+  }, [connectError]);
+
+  useEffect(() => {
+    if (switchError) {
+      logTechnicalError('[WalletControls] Network switch failed', switchError);
+    }
+  }, [switchError]);
 
   const orderedConnectors = useMemo(() => {
     const list = Array.from(connectorMap.values());
@@ -234,6 +252,12 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
                   <span className="font-semibold">{panel.walletBalance}</span>
                 </div>
               )}
+              {panel?.withdrawableBalance && (
+                <div className="flex items-center justify-between text-xs text-white/70">
+                  <span>Withdrawable</span>
+                  <span className="font-medium">{panel.withdrawableBalance}</span>
+                </div>
+              )}
               {panel?.tableStack && (
                 <div className="flex items-center justify-between text-sm text-white">
                   <span>Table Stack</span>
@@ -269,6 +293,11 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
 
               <div className="space-y-2">
                 <span>Withdraw Chips</span>
+                {panel?.withdrawableBalance && (
+                  <p className="normal-case tracking-normal text-[0.65rem] text-white/50">
+                    Only ETH-purchased chips can be withdrawn (not free promo chips).
+                  </p>
+                )}
                 <form onSubmit={handleWithdrawSubmit} className="flex flex-col gap-2 sm:flex-row">
                   <Input
                     value={withdrawValue}
@@ -312,7 +341,9 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
             )}
 
             {(switchError || wrongNetworkMessage) && (
-              <p className="text-xs text-amber-300/80">{switchError?.shortMessage || wrongNetworkMessage}</p>
+              <p className="text-xs text-amber-300/80">
+                {switchError ? describeNetworkSwitchError(switchError) : wrongNetworkMessage}
+              </p>
             )}
 
             <div className="flex justify-end">
@@ -332,7 +363,7 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
             <div className="space-y-1 text-[0.58rem] uppercase tracking-[0.3em] text-white/45">
               <span>Connect Wallet</span>
               <p className="text-sm text-white/70">
-                Select a wallet provider to start encrypted blackjack.
+                Select a wallet provider to start playing.
               </p>
             </div>
             <div className="grid gap-2">
@@ -371,9 +402,7 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
               </p>
             )}
             {connectError && (
-              <p className="text-xs text-red-400">
-                {connectError.shortMessage || connectError.message}
-              </p>
+              <p className="text-xs text-red-400">{describeWalletConnectError(connectError)}</p>
             )}
           </div>
         )}

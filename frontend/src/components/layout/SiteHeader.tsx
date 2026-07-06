@@ -75,7 +75,7 @@ export const SiteHeader = ({ playerTableId, tablePhase, walletPanel }: SiteHeade
               </div>
               <div className="flex flex-col">
                 <span className="text-[0.65rem] uppercase tracking-[0.45em] text-primary/70">CipherJack</span>
-                <span className="text-base font-semibold text-white">Encrypted Blackjack</span>
+                <span className="text-base font-semibold text-white">Private Blackjack</span>
               </div>
             </Link>
             {playerTableId && (

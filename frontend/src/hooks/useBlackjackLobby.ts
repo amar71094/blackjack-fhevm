@@ -6,6 +6,13 @@ import { blackjackContract } from '@/lib/contracts';
 import { TableStatus, GamePhase } from '@/types/blackjackContract';
 import { devError, devLog } from '@/lib/devLog';
 import { friendlyRevertMessage, writeBlackjackContract } from '@/lib/contractWrite';
+import { validateBuyChipsPreflight, validateWithdrawChipsPreflight } from '@/lib/economyHelpers';
+import {
+  describeUserFacingError,
+  getActionErrorTitle,
+  logTechnicalError,
+  shortenTxHash
+} from '@/lib/userMessages';
 import { waitForTxReceipt } from '@/lib/txReceipt';
 
 export interface LobbyTable {
@@ -26,6 +33,7 @@ export interface BlackjackLobbyData {
   refetchTables: () => Promise<void>;
   playerTableId?: bigint;
   walletChips?: bigint;
+  withdrawableChips?: bigint;
   hasClaimedFreeChips?: boolean;
   actions: {
     createTable: (minBuyIn: bigint, maxBuyIn: bigint) => Promise<boolean>;
@@ -145,6 +153,19 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     }
   });
 
+  const {
+    data: withdrawableChips,
+    refetch: refetchWithdrawableChips
+  } = useReadContract({
+    ...blackjackContract,
+    functionName: 'withdrawableChips',
+    args: address ? [address] as const : undefined,
+    query: {
+      enabled: Boolean(address && blackjackContract.address),
+      refetchInterval: LOBBY_POLL_INTERVAL
+    }
+  });
+
   const waitForReceipt = useCallback(
     async (hash: `0x${string}`) => {
       if (!publicClient) return;
@@ -159,11 +180,15 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
       return false;
     }
     if (!blackjackContract.address) {
-      toast.error('Blackjack contract is not configured.');
+      logTechnicalError(
+        '[BlackjackLobby] Blackjack contract is not configured',
+        new Error('VITE_BLACKJACK_CONTRACT is not set')
+      );
+      toast.error('CipherJack is temporarily unavailable. Please try again later.');
       return false;
     }
     if (chainId !== sepolia.id) {
-      toast.error('Switch your wallet to Sepolia to play CipherJack.');
+      toast.error('Switch your wallet to the Sepolia test network to play.');
       return false;
     }
     return true;
@@ -181,13 +206,15 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     const tasks: Promise<unknown>[] = [refetch()];
     if (refetchPlayerTable) tasks.push(refetchPlayerTable());
     if (refetchWalletChips) tasks.push(refetchWalletChips());
+    if (refetchWithdrawableChips) tasks.push(refetchWithdrawableChips());
     if (refetchClaimStatus) tasks.push(refetchClaimStatus());
     await Promise.allSettled(tasks);
   }, [
     refetch,
     refetchClaimStatus,
     refetchPlayerTable,
-    refetchWalletChips
+    refetchWalletChips,
+    refetchWithdrawableChips
   ]);
 
   const execute = useCallback(
@@ -199,7 +226,7 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     ): Promise<boolean> => {
       if (!requireWallet()) return false;
       if (!publicClient || !walletClient) {
-        toast.error('Wallet client is not ready — reconnect your wallet and retry.');
+        toast.error('Your wallet is not ready. Reconnect and try again.');
         return false;
       }
       try {
@@ -214,7 +241,7 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
           args: args as never,
           value
         });
-        toast.message('Transaction submitted', { description: hash });
+        toast.message('Transaction submitted', { description: shortenTxHash(hash) });
         devLog('[BlackjackLobby] writeContract submitted', { functionName, hash });
         await waitForReceipt(hash);
         devLog('[BlackjackLobby] writeContract confirmed', { functionName, hash });
@@ -224,14 +251,14 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
         await refreshAfterWrite();
         return true;
       } catch (error) {
-        devError('[BlackjackLobby] writeContract error', { functionName, error });
-        const friendly = friendlyRevertMessage(error);
-        const description = friendly ?? (
-          (error as { shortMessage?: string })?.shortMessage ||
-          (error as Error)?.message ||
-          'Unknown error'
-        );
-        toast.error(`Failed to execute ${functionName}`, { description });
+        logTechnicalError(`[BlackjackLobby] writeContract error (${functionName})`, error, {
+          functionName,
+          args,
+          value
+        });
+        const title = getActionErrorTitle(functionName);
+        const description = friendlyRevertMessage(error) ?? describeUserFacingError(error);
+        toast.error(title, { description });
         return false;
       } finally {
         setPendingAction(null);
@@ -308,9 +335,24 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
           toast.error('Send a positive ETH amount.');
           return false;
         }
-        if (playerTableId && playerTableId !== 0n) {
-          toast.error('Leave your current table or cash out before buying chips.');
+        if (!publicClient || !address || !blackjackContract.address) {
+          toast.error('Your wallet is not ready. Reconnect and try again.');
           return false;
+        }
+        try {
+          const preflightError = await validateBuyChipsPreflight(
+            publicClient,
+            blackjackContract.address,
+            address,
+            weiAmount,
+            playerTableId as bigint | undefined
+          );
+          if (preflightError) {
+            toast.error(preflightError);
+            return false;
+          }
+        } catch (error) {
+          logTechnicalError('[BlackjackLobby] buyChips preflight failed', error);
         }
         return execute('buyChips', [] as const, weiAmount, 'Chips purchased');
       },
@@ -319,14 +361,25 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
           toast.error('Enter a withdraw amount greater than zero.');
           return false;
         }
-        if (playerTableId && playerTableId !== 0n) {
-          toast.error('Leave your current table or cash out before withdrawing.');
+        if (!publicClient || !address || !blackjackContract.address) {
+          toast.error('Your wallet is not ready. Reconnect and try again.');
           return false;
         }
-        const walletBalance = walletChips as bigint | undefined;
-        if (walletBalance !== undefined && chipAmount > walletBalance) {
-          toast.error('Not enough chips in your wallet.');
-          return false;
+        try {
+          const preflightError = await validateWithdrawChipsPreflight(
+            publicClient,
+            blackjackContract.address,
+            address,
+            chipAmount,
+            playerTableId as bigint | undefined,
+            walletChips as bigint | undefined
+          );
+          if (preflightError) {
+            toast.error(preflightError);
+            return false;
+          }
+        } catch (error) {
+          logTechnicalError('[BlackjackLobby] withdrawChips preflight failed', error);
         }
         return execute(
           'withdrawChips',
@@ -336,7 +389,7 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
         );
       }
     }),
-    [execute, hasClaimedFreeChips, playerTableId, tables, walletChips]
+    [address, execute, hasClaimedFreeChips, playerTableId, publicClient, tables, walletChips]
   );
 
   return {
@@ -346,6 +399,7 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
     refetchTables: refetch,
     playerTableId: playerTableId as bigint | undefined,
     walletChips: walletChips as bigint | undefined,
+    withdrawableChips: withdrawableChips as bigint | undefined,
     hasClaimedFreeChips: typeof hasClaimedFreeChips === 'boolean' ? hasClaimedFreeChips : undefined,
     actions
   };

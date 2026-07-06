@@ -139,17 +139,41 @@ export const calculateHandValue = (cards: Card[]) => {
   return total;
 };
 
-/** Detect bust from on-chain flag, revealed total, and/or inactive+acted after oracle bust. */
+export type ResolvePlayerBustOptions = {
+  chainBusted?: boolean;
+  cardsFullyRevealed?: boolean;
+  pendingDealForPlayer?: boolean;
+  /** When true (connected seat), wait until decrypted cards catch up before showing bust. */
+  requireRevealedCards?: boolean;
+};
+
+/** Detect bust from on-chain flag or a fully revealed hand total — never infer from stand/turn state. */
 export const resolvePlayerBust = (
-  player: Pick<Player, 'bust' | 'isActive' | 'hasActed' | 'hand' | 'bet'> & { chainBusted?: boolean },
-  revealedTotal?: number | null
+  player: Pick<Player, 'bust' | 'hand'> & { chainBusted?: boolean },
+  revealedTotal?: number | null,
+  options?: ResolvePlayerBustOptions
 ): boolean => {
-  if (player.chainBusted) return true;
-  if (player.bust) return true;
-  if (revealedTotal !== null && revealedTotal !== undefined && revealedTotal > 21) {
+  if (options?.pendingDealForPlayer) {
+    return false;
+  }
+
+  const chainBusted = Boolean(options?.chainBusted ?? player.chainBusted);
+  const cardsFullyRevealed = Boolean(options?.cardsFullyRevealed);
+  const requireRevealedCards = Boolean(options?.requireRevealedCards);
+  const hasHand = player.hand.length > 0;
+
+  if (chainBusted || player.bust) {
+    if (requireRevealedCards && hasHand && !cardsFullyRevealed) {
+      return false;
+    }
     return true;
   }
-  return !player.isActive && player.hasActed && player.hand.length > 0 && player.bet > 0;
+
+  if (cardsFullyRevealed && revealedTotal !== null && revealedTotal !== undefined && revealedTotal > 21) {
+    return true;
+  }
+
+  return false;
 };
 
 const toUiPlayer = (player: ContractPlayPlayer, index: number): Player => {
@@ -157,9 +181,7 @@ const toUiPlayer = (player: ContractPlayPlayer, index: number): Player => {
     toHiddenCard(cardIndex, `${player.addr}-${index}`)
   );
   const stand = player.isActive && player.hasActed && hand.length > 0 && !player.busted;
-  const bust =
-    player.busted ||
-    (!player.isActive && player.hasActed && hand.length > 0 && Number(player.bet) > 0);
+  const bust = player.busted;
 
   return {
     id: `${player.addr}-${index}`,

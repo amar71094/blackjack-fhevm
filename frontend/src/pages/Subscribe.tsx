@@ -39,7 +39,7 @@ const Subscribe = () => {
         <div className="w-full max-w-lg rounded-3xl border border-white/15 bg-black/35 px-6 py-10 shadow-[0_30px_70px_-30px_rgba(0,0,0,0.9)] backdrop-blur sm:px-10 sm:py-12">
           <h1 className="text-2xl font-black tracking-tight text-white sm:text-4xl">CipherJack is launching soon</h1>
           <p className="mt-4 text-sm text-slate-200/85 sm:text-base">
-            We’re finalising the encrypted tables and stacking fresh chip drops. Keep an eye on our X feed for the launch countdown and early-access codes.
+            We’re putting the finishing touches on the tables and stacking fresh chip drops. Keep an eye on our X feed for the launch countdown and early-access codes.
           </p>
           <div className="mt-8 flex justify-center">
             <Button
