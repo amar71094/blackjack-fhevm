@@ -86,6 +86,23 @@ export function waitingOnPlayerLabel(playerName: string): string {
   return `Waiting on ${playerName}`;
 }
 
+export function playerActingLabel(playerName: string): string {
+  return `${playerName} Acting`;
+}
+
+/** Seat or table banner when a player spot is active during player-turn. */
+export function seatTurnLabel(isConnectedViewer: boolean, playerName: string): string {
+  return isConnectedViewer ? 'Your Turn' : playerActingLabel(playerName);
+}
+
+export function isConnectedActivePlayer(
+  activePlayerAddress: string | undefined,
+  connectedPlayerAddress: string | undefined
+): boolean {
+  if (!activePlayerAddress || !connectedPlayerAddress) return false;
+  return activePlayerAddress.toLowerCase() === connectedPlayerAddress.toLowerCase();
+}
+
 export function tableProcessingHelperMessage(params: {
   confirmingBust: boolean;
   dealingHand: boolean;

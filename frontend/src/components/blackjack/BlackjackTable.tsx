@@ -17,7 +17,14 @@ import { TableStatsBar } from './TableStatsBar';
 import { TableActivityDialog } from './TableActivityDialog';
 import { PlayerDecryptState } from './PlayerSpot';
 import { Button } from '@/components/ui/button';
-import { TABLE_STATUS, tableProcessingHelperMessage, waitingOnPlayerLabel } from '@/lib/userMessages';
+import {
+  isConnectedActivePlayer,
+  playerActingLabel,
+  seatTurnLabel,
+  TABLE_STATUS,
+  tableProcessingHelperMessage,
+  waitingOnPlayerLabel
+} from '@/lib/userMessages';
 import { PendingKind } from '@/types/blackjackContract';
 
 interface BlackjackTableProps {
@@ -215,7 +222,18 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     return addressToName.get(pendingOraclePlayer) ?? `${pendingOraclePlayer.slice(0, 6)}…${pendingOraclePlayer.slice(-4)}`;
   }, [addressToName, pendingOraclePlayer]);
 
+  const dealerRevealed = useMemo(
+    () =>
+      Boolean(
+        gameState?.dealer.cardsRevealed ||
+        (dealerPublicHand && dealerDecryptState === 'success') ||
+        (dealerHandForLastResult && hasRevealedCards(dealerHandForLastResult.cards))
+      ),
+    [gameState?.dealer.cardsRevealed, dealerPublicHand, dealerDecryptState, dealerHandForLastResult]
+  );
+
   const dealerPhaseActive = useMemo(() => {
+    if (dealerRevealed) return false;
     if (gameState?.phase === 'dealer-turn') return true;
     if (tableStuck) return true;
     if (oraclePending && (pendingOracleKind === PendingKind.DealerPlay || pendingOracleKind === PendingKind.Settle)) {
@@ -229,7 +247,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       return true;
     }
     return false;
-  }, [gameState, tableStuck, oraclePending, pendingOracleKind, players]);
+  }, [dealerRevealed, gameState, tableStuck, oraclePending, pendingOracleKind, players]);
   const winnersSet = useMemo(() => new Set(winnersList), [winnersList]);
   const potAmount = activeSummary ? activeSummary.pot : gameState?.pot ?? 0;
   const dealerWins = activeSummary ? activeSummary.dealerWins : (gameState?.phase === 'showdown' && winnersList.length === 0);
@@ -241,11 +259,23 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
   const walletChipsDisplay = walletChips !== undefined ? formatChips(walletChips) : undefined;
   const walletChipsLabel = walletChipsDisplay ?? '—';
   const withdrawableDisplay = withdrawableChips !== undefined ? formatChips(withdrawableChips) : undefined;
+  const activePlayerIndex = gameState?.activePlayerIndex ?? -1;
+  const activeSpotPlayer = activePlayerIndex >= 0 ? players[activePlayerIndex] : undefined;
+
+  const isConnectedPlayerActive = useMemo(
+    () =>
+      gameState?.phase === 'player-turn' &&
+      Boolean(activeSpotPlayer) &&
+      !activeSpotPlayer?.bust &&
+      isConnectedActivePlayer(activeSpotPlayer?.address, connectedPlayer?.address),
+    [activeSpotPlayer, connectedPlayer?.address, gameState?.phase]
+  );
+
   const connectedCanAct = Boolean(
     connectedPlayer &&
+      isConnectedPlayerActive &&
       isPlayerTurn &&
       !oraclePending &&
-      gameState?.phase === 'player-turn' &&
       !connectedPlayer.bust &&
       connectedPlayer.hand.length > 0
   );
@@ -305,12 +335,21 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       if (pendingOracleKind === PendingKind.DealerPlay || pendingOracleKind === PendingKind.Settle) {
         return TABLE_STATUS.dealerPlayingBanner;
       }
-      if (pendingOraclePlayerName) return waitingOnPlayerLabel(pendingOraclePlayerName);
+      if (pendingOraclePlayerName) {
+        const waitingOnSelf = isConnectedActivePlayer(
+          pendingOraclePlayer?.toLowerCase(),
+          connectedPlayer?.address
+        );
+        if (!waitingOnSelf) return waitingOnPlayerLabel(pendingOraclePlayerName);
+      }
       return TABLE_STATUS.pleaseWaitBanner;
     }
-    if (connectedCanAct) return 'Your Turn';
+    if (isConnectedPlayerActive) return 'Your Turn';
+    if (dealerDecryptState === 'pending' && (dealerPhaseActive || awaitingNextHand)) {
+      return 'Revealing Dealer';
+    }
     if (dealerPhaseActive) return 'Dealer Acting';
-    if ((gameState?.activePlayerIndex ?? -1) >= 0) return `${activePlayerName} Acting`;
+    if (activePlayerIndex >= 0) return playerActingLabel(activePlayerName);
     return 'Standing By';
   }, [
     oraclePending,
@@ -318,19 +357,33 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     oraclePendingForSelf,
     pendingOracleKind,
     pendingOraclePlayerName,
-    connectedCanAct,
+    isConnectedPlayerActive,
     dealerPhaseActive,
-    gameState?.activePlayerIndex,
-    activePlayerName
+    dealerDecryptState,
+    awaitingNextHand,
+    activePlayerIndex,
+    activePlayerName,
+    pendingOraclePlayer,
+    connectedPlayer?.address
   ]);
 
-  const showTurnBanner = useMemo(() => {
+  // Player-turn labels live on each seat — table banner is for dealer/oracle/stuck only.
+  const showTableStatusBanner = useMemo(() => {
     if (awaitingNextHand) return false;
-    if (gameState?.phase === 'player-turn' || gameState?.phase === 'dealer-turn') return true;
+    if (gameState?.phase === 'player-turn') {
+      return oraclePending || tableStuck;
+    }
+    if (gameState?.phase === 'dealer-turn' && !dealerRevealed) return true;
+    if (dealerDecryptState === 'pending' && awaitingNextHand) return true;
     if (oraclePending && gameState?.phase !== 'betting') return true;
     if (tableStuck) return true;
     return false;
-  }, [awaitingNextHand, gameState?.phase, oraclePending, tableStuck]);
+  }, [awaitingNextHand, gameState?.phase, oraclePending, tableStuck, dealerRevealed, dealerDecryptState]);
+
+  const showTurnTimer = useMemo(
+    () => Boolean(turnTimer && gameState?.phase === 'player-turn' && !awaitingNextHand),
+    [turnTimer, gameState?.phase, awaitingNextHand]
+  );
 
   const disableActions = pendingAction !== null || isLoading || awaitingNextHand;
   const minBuyInDisplay = formatChips(minBuyIn);
@@ -521,7 +574,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       { label: 'Table', value: `#${activeTableId.toString()}` },
       { label: 'Stage', value: phaseLabel },
       { label: 'Players', value: players.length.toString() },
-      { label: 'Active', value: activePlayerName },
+      { label: 'Active', value: isConnectedPlayerActive ? 'You' : activePlayerName },
       ...(gameState?.phase === 'player-turn' && turnTimer
         ? [{ label: 'Turn Timer', value: turnTimerDisplay }]
         : []),
@@ -534,6 +587,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       phaseLabel,
       players.length,
       activePlayerName,
+      isConnectedPlayerActive,
       gameState?.phase,
       turnTimer,
       turnTimerDisplay,
@@ -568,8 +622,11 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       return { label: 'Place Your Bet', variant: 'active' as const };
     }
     if (tableStuck) return { label: 'Starting Dealer Turn', variant: 'waiting' as const };
-    if (gameState?.phase === 'player-turn' && isSeated && !isPlayerTurn) {
+    if (gameState?.phase === 'player-turn' && isSeated && !isConnectedPlayerActive) {
       return { label: 'Not Your Turn', variant: 'idle' as const };
+    }
+    if (gameState?.phase === 'player-turn' && isConnectedPlayerActive && !connectedCanAct) {
+      return { label: 'Your Turn', variant: 'waiting' as const };
     }
     if (disableActions) return { label: 'Locked', variant: 'locked' as const };
     if (gameState?.phase === 'dealing') return { label: 'Dealing Cards', variant: 'waiting' as const };
@@ -585,7 +642,8 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     tableStuck,
     gameState?.phase,
     isSeated,
-    isPlayerTurn,
+    isConnectedPlayerActive,
+    connectedCanAct,
     disableActions
   ]);
 
@@ -612,7 +670,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     if (connectedPlayer?.bust) {
       return 'You busted. The table advances automatically — no action needed.';
     }
-    if (gameState?.phase === 'player-turn' && isSeated && !isPlayerTurn && !connectedPlayer?.bust) {
+    if (gameState?.phase === 'player-turn' && isSeated && !isConnectedPlayerActive && !connectedPlayer?.bust) {
       const timerHint = turnTimer
         ? ` Turn timer: ${formatTurnCountdown(turnTimer.secondsRemaining)}.`
         : '';
@@ -631,7 +689,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     tableStuck,
     gameState?.phase,
     isSeated,
-    isPlayerTurn,
+    isConnectedPlayerActive,
     connectedPlayer,
     connectedCanAct,
     turnTimer,
@@ -743,7 +801,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                     hideSecondCard={!overlayDealer?.cardsRevealed}
                     dealerWins={overlayDealerWins}
                     potAmount={potAmount}
-                    awaitingReveal={gameState?.phase === 'dealer-turn' && !gameState?.dealer.cardsRevealed}
+                    awaitingReveal={!dealerRevealed && (dealerPhaseActive || awaitingNextHand)}
                     decryptState={dealerDecryptState as PlayerDecryptState}
                     onRetryDecrypt={actions.retryDealerDecrypt}
                   />
@@ -770,21 +828,23 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                 </div>
 
                 <div className="relative mt-2 rounded-3xl border border-white/5 bg-black/28 px-4 pb-5 pt-5 backdrop-blur sm:px-6">
-                  {showTurnBanner && players.length > 0 && (
+                  {(showTableStatusBanner || showTurnTimer) && players.length > 0 && (
                     <div className="mb-4 flex flex-col items-center gap-1">
-                      <div
-                        className={cn(
-                          'rounded-full px-4 py-1 text-xs font-semibold uppercase tracking-[0.4em] shadow',
-                          connectedCanAct
-                            ? 'bg-emerald-400/90 text-emerald-950'
-                            : oraclePending || dealerPhaseActive
-                              ? 'bg-amber-400/85 text-amber-950'
-                              : 'bg-primary/80 text-primary-foreground'
-                        )}
-                      >
-                        {turnBannerLabel}
-                      </div>
-                      {turnTimer && (
+                      {showTableStatusBanner && (
+                        <div
+                          className={cn(
+                            'rounded-full px-4 py-1 text-xs font-semibold uppercase tracking-[0.4em] shadow',
+                            connectedCanAct
+                              ? 'bg-emerald-400/90 text-emerald-950'
+                              : oraclePending || dealerPhaseActive
+                                ? 'bg-amber-400/85 text-amber-950'
+                                : 'bg-primary/80 text-primary-foreground'
+                          )}
+                        >
+                          {turnBannerLabel}
+                        </div>
+                      )}
+                      {showTurnTimer && turnTimer && (
                         <div
                           className={cn(
                             'rounded-full border px-3 py-0.5 text-[0.58rem] font-semibold uppercase tracking-[0.32em]',
@@ -822,8 +882,8 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
                             player={player}
                             isActive={
                               gameState?.phase === 'player-turn' &&
-                              (gameState?.activePlayerIndex ?? -1) === index &&
-                              (gameState?.activePlayerIndex ?? -1) >= 0
+                              activePlayerIndex === index &&
+                              activePlayerIndex >= 0
                             }
                             showCards={shouldShowCards || player.cardsRevealed}
                             phase={gameState?.phase ?? 'waiting'}

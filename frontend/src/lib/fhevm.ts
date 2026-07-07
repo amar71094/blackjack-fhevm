@@ -50,17 +50,41 @@ export const hexlifyHandle = (value: string): string => ethers.hexlify(value as 
 
 type ClearValueMap = Readonly<Record<string, unknown>>;
 
+const normalizeHandleKey = (value: string): string => hexlifyHandle(value).toLowerCase();
+
+/** Coerce relayer clear text (bigint | number | hex string) to a finite number. */
+export const coerceClearNumber = (value: unknown): number => {
+  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'number') return value;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return Number.NaN;
+    if (/^0x/i.test(trimmed)) return Number(BigInt(trimmed));
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+  return Number.NaN;
+};
+
 /** publicDecrypt returns `{ clearValues }`; userDecrypt returns the map directly. */
 export const readClearValue = (
   decrypted: ClearValueMap | { clearValues?: ClearValueMap },
   handle: string
 ): unknown => {
-  const normalized = hexlifyHandle(handle);
+  const normalized = normalizeHandleKey(handle);
+  const maps: ClearValueMap[] = [];
   const direct = decrypted as ClearValueMap;
-  if (normalized in direct) return direct[normalized];
+  if (direct && typeof direct === 'object') maps.push(direct);
   const wrapped = decrypted as { clearValues?: ClearValueMap };
-  if (wrapped.clearValues && normalized in wrapped.clearValues) {
-    return wrapped.clearValues[normalized];
+  if (wrapped.clearValues) maps.push(wrapped.clearValues);
+
+  for (const map of maps) {
+    for (const [key, value] of Object.entries(map)) {
+      if (normalizeHandleKey(key) === normalized) {
+        return value;
+      }
+    }
   }
   return undefined;
 };

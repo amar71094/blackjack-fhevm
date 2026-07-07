@@ -3,6 +3,7 @@ import { Card } from './Card';
 import { calculateHandValue, resolvePlayerBust, toHiddenCard } from '@/utils/contractMapping';
 import playerAvatar from '@/assets/player-ghost.png';
 import { cn } from '@/lib/utils';
+import { seatTurnLabel } from '@/lib/userMessages';
 import { ChipStack, ChipMotion } from './ChipStack';
 import { RotateCcw } from 'lucide-react';
 
@@ -109,7 +110,7 @@ export const PlayerSpot = ({
   }
 
   const showTurnBanner = Boolean(isActive && phase === 'player-turn' && !isBusted);
-  const turnLabel = isConnected ? 'Your Turn' : 'Playing';
+  const turnLabel = seatTurnLabel(isConnected, player.name);
 
   return (
     <div
