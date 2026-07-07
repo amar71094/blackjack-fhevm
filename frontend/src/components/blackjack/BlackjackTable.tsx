@@ -8,6 +8,7 @@ import { useBlackjackGame } from '@/hooks/useBlackjackGame';
 import { cn } from '@/lib/utils';
 import feltTexture from '@/assets/poker-table-felt.jpg';
 import { SiteHeader } from '@/components/layout/SiteHeader';
+import { TestnetBanner } from '@/components/layout/TestnetBanner';
 import { calculateHandValue, formatChips, hasRevealedCards, toHiddenCard } from '@/utils/contractMapping';
 import { parseEther } from 'viem';
 import { toast } from '@/lib/toast';
@@ -237,7 +238,8 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
 
   const availableChips = connectedPlayer ? connectedPlayer.chips + connectedPlayer.bet : 0;
   const availableChipsDisplay = formatChips(availableChips);
-  const walletChipsDisplay = walletChips !== undefined ? formatChips(walletChips) : '—';
+  const walletChipsDisplay = walletChips !== undefined ? formatChips(walletChips) : undefined;
+  const walletChipsLabel = walletChipsDisplay ?? '—';
   const withdrawableDisplay = withdrawableChips !== undefined ? formatChips(withdrawableChips) : undefined;
   const connectedCanAct = Boolean(
     connectedPlayer &&
@@ -605,7 +607,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
       return 'Betting is open — enter your wager and press Bet.';
     }
     if (tableStuck) {
-      return 'All players have finished. The dealer step should begin automatically within about a minute.';
+      return 'All players have finished. The dealer step will begin shortly.';
     }
     if (connectedPlayer?.bust) {
       return 'You busted. The table advances automatically — no action needed.';
@@ -659,11 +661,16 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(235,199,93,0.18),transparent_55%)]" />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_bottom,rgba(16,75,95,0.25),transparent_60%)]" />
-      <SiteHeader
-        playerTableId={headerTableId}
-        tablePhase={gameState?.phase}
-        walletPanel={walletPanelConfig}
-      />
+      <div className="relative flex flex-col gap-3">
+        <SiteHeader
+          playerTableId={headerTableId}
+          tablePhase={gameState?.phase}
+          walletPanel={walletPanelConfig}
+        />
+        <div className="relative mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
+          <TestnetBanner />
+        </div>
+      </div>
       <div className="relative mx-auto flex w-full max-w-7xl flex-1 flex-col gap-3 px-4 py-3 sm:px-6 sm:py-4 lg:px-8">
         <TableStatsBar
           stats={tableStats}
@@ -675,7 +682,7 @@ export const BlackjackTable = ({ tableId }: BlackjackTableProps) => {
             canTopUp: gameState?.phase === 'betting',
             minBuyIn: minBuyInDisplay,
             maxBuyIn: maxBuyInDisplay,
-            walletChips: walletChipsDisplay,
+            walletChips: walletChipsLabel,
             availableChips: connectedPlayer ? formatChips(connectedPlayer.chips) : undefined,
             onTopUp: handleTopUp,
             onLeave: handleLeaveTableAction,

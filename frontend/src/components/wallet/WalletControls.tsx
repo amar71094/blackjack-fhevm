@@ -4,7 +4,6 @@ import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import { useToast } from '@/components/ui/use-toast';
 import { Copy, Loader2, Power, Wallet, Zap } from 'lucide-react';
 import {
   useAccount,
@@ -13,8 +12,9 @@ import {
   useSwitchChain
 } from 'wagmi';
 import { sepolia } from 'wagmi/chains';
-import { hasWalletConnect, walletConnectConnector } from '@/lib/wagmi';
 import { clearAllStoredSignatures } from '@/lib/decryptionSignature';
+import { toast } from '@/lib/toast';
+import { getWalletConnectorsForDisplay } from '@/lib/walletConnectors';
 import {
   describeNetworkSwitchError,
   describeWalletConnectError,
@@ -22,7 +22,7 @@ import {
 } from '@/lib/userMessages';
 
 export interface WalletPanelConfig {
-  walletBalance: string;
+  walletBalance?: string;
   withdrawableBalance?: string;
   tableStack?: string;
   availableForBet?: string;
@@ -43,7 +43,6 @@ const formatAddress = (address?: string | null) => {
 };
 
 export const WalletControls = ({ panel }: WalletControlsProps) => {
-  const { toast } = useToast();
   const { address, chain, status: accountStatus } = useAccount();
   const {
     connectors,
@@ -67,28 +66,25 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
   const [isClaiming, setIsClaiming] = useState(false);
 
   const isConnected = accountStatus === 'connected';
+  const isConnecting = accountStatus === 'connecting' || accountStatus === 'reconnecting';
   const isOnSepolia = chain?.id === sepolia.id;
-  const connectorMap = useMemo(() => {
-    const map = new Map<string, (typeof connectors)[number]>();
-    connectors.forEach((connector) => {
-      if (connector?.id) {
-        map.set(connector.id, connector);
-      }
-    });
-    if (hasWalletConnect && walletConnectConnector && !map.has(walletConnectConnector.id)) {
-      map.set(walletConnectConnector.id, walletConnectConnector);
-    }
-    return map;
-  }, [connectors]);
+  const orderedConnectors = useMemo(
+    () => getWalletConnectorsForDisplay(connectors),
+    [connectors]
+  );
 
   useEffect(() => {
-    const entries = Array.from(connectorMap.values()).map((connector) => ({
-      id: connector.id,
-      name: connector.name,
-      ready: connector.ready
-    }));
-    if (import.meta.env.DEV) console.info('[WalletControls] available connectors', entries);
-  }, [connectorMap]);
+    if (import.meta.env.DEV) {
+      console.info(
+        '[WalletControls] available connectors',
+        orderedConnectors.map((connector) => ({
+          id: connector.id,
+          name: connector.name,
+          ready: connector.ready
+        }))
+      );
+    }
+  }, [orderedConnectors]);
 
   useEffect(() => {
     if (connectError) {
@@ -102,46 +98,36 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
     }
   }, [switchError]);
 
-  const orderedConnectors = useMemo(() => {
-    const list = Array.from(connectorMap.values());
-    list.sort((a, b) => {
-      if (a.id === b.id) return 0;
-      if (a.id === 'walletConnect') return -1;
-      if (b.id === 'walletConnect') return 1;
-      if (a.id === 'injected' && b.id !== 'injected') return 1;
-      if (b.id === 'injected' && a.id !== 'injected') return -1;
-      return a.name.localeCompare(b.name);
-    });
-    return list;
-  }, [connectorMap]);
-
   const disablePanelActions = Boolean(panel?.pending || isClaiming);
+  const disableEconomyActions = disablePanelActions || !isOnSepolia;
+  const claimButtonLabel = useMemo(() => {
+    if (panel?.hasClaimedFreeChips === undefined) return 'Checking…';
+    if (panel.hasClaimedFreeChips) return 'Already Claimed';
+    if (isClaiming) return 'Claiming…';
+    return 'Claim Free Chips';
+  }, [isClaiming, panel?.hasClaimedFreeChips]);
 
   const handleConnect = useCallback((connectorId?: string) => {
     const selected = connectorId
-      ? connectorMap.get(connectorId)
+      ? orderedConnectors.find((connector) => connector.id === connectorId)
       : orderedConnectors[0];
 
     if (!selected) {
-      toast({
-        title: 'No wallet connector available',
-        description: 'Install a browser wallet like MetaMask or use WalletConnect to continue.',
-        variant: 'destructive'
+      toast.error('No wallet connector available', {
+        description: 'Install a browser wallet like MetaMask or use WalletConnect to continue.'
       });
       return;
     }
 
     if (selected.id === 'injected' && !selected.ready) {
-      toast({
-        title: 'No browser wallet detected',
-        description: 'Install MetaMask or choose WalletConnect to link a mobile wallet.',
-        variant: 'destructive'
+      toast.error('No browser wallet detected', {
+        description: 'Install MetaMask or choose WalletConnect to link a mobile wallet.'
       });
       return;
     }
 
     connect({ connector: selected });
-  }, [connect, connectorMap, orderedConnectors, toast]);
+  }, [connect, orderedConnectors, toast]);
 
   const handleDisconnect = useCallback(() => {
     if (address) {
@@ -156,16 +142,14 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
     navigator.clipboard
       ?.writeText(address)
       .then(() => {
-        toast({ title: 'Address copied', description: address });
+        toast.success('Address copied', { description: address });
       })
       .catch(() => {
-        toast({
-          title: 'Failed to copy address',
-          description: 'Select and copy the address manually.',
-          variant: 'destructive'
+        toast.error('Failed to copy address', {
+          description: 'Select and copy the address manually.'
         });
       });
-  }, [address, toast]);
+  }, [address]);
 
   const handleBuySubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -203,7 +187,11 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
     return chain?.name ? `Connected to ${chain.name}` : 'Unsupported network';
   }, [chain?.name, isConnected, isOnSepolia, switchChain]);
 
-  const triggerLabel = isConnected ? formatAddress(address) : 'Connect Wallet';
+  const triggerLabel = isConnecting
+    ? 'Connecting…'
+    : isConnected
+      ? formatAddress(address)
+      : 'Connect Wallet';
   const showInjectedWarning = orderedConnectors.some(
     (connector) => connector.id === 'injected' && !connector.ready
   );
@@ -218,9 +206,9 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
             if (!isConnected) setOpen(true);
           }}
         >
-          <Wallet className="h-4 w-4" />
+          {isConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
           {triggerLabel || 'Wallet'}
-          {isConnected && panel?.walletBalance && (
+          {isConnected && panel?.walletBalance !== undefined && (
             <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.32em] text-white/75">
               {panel.walletBalance}
             </span>
@@ -246,13 +234,18 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
             </div>
 
             <div className="space-y-1 text-[0.58rem] uppercase tracking-[0.3em] text-white/45">
-              {panel?.walletBalance && (
+              {panel?.walletBalance !== undefined ? (
                 <div className="flex items-center justify-between text-sm text-white">
                   <span>Wallet Chips</span>
                   <span className="font-semibold">{panel.walletBalance}</span>
                 </div>
+              ) : (
+                <div className="flex items-center justify-between text-sm text-white/60">
+                  <span>Wallet Chips</span>
+                  <span className="font-medium">Loading…</span>
+                </div>
               )}
-              {panel?.withdrawableBalance && (
+              {panel?.withdrawableBalance !== undefined && (
                 <div className="flex items-center justify-between text-xs text-white/70">
                   <span>Withdrawable</span>
                   <span className="font-medium">{panel.withdrawableBalance}</span>
@@ -277,15 +270,18 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
             <div className="grid gap-3 text-[0.58rem] uppercase tracking-[0.3em] text-white/45">
               <div className="space-y-2">
                 <span>Buy Chips</span>
+                <p className="normal-case tracking-normal text-[0.65rem] text-white/50">
+                  Purchases use Sepolia test ETH. Need test ETH? Use a Sepolia faucet.
+                </p>
                 <form onSubmit={handleBuySubmit} className="flex flex-col gap-2 sm:flex-row">
                   <Input
                     value={buyValue}
                     onChange={(event) => setBuyValue(event.target.value)}
                     placeholder="Buy chips (ETH)"
                     className="bg-black/40 text-white"
-                    disabled={!panel?.onBuyChips || disablePanelActions}
+                    disabled={!panel?.onBuyChips || disableEconomyActions}
                   />
-                  <Button type="submit" disabled={!panel?.onBuyChips || disablePanelActions} className="sm:w-auto">
+                  <Button type="submit" disabled={!panel?.onBuyChips || disableEconomyActions} className="sm:w-auto">
                     {panel?.onBuyChips ? 'Buy' : 'Disabled'}
                   </Button>
                 </form>
@@ -293,7 +289,7 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
 
               <div className="space-y-2">
                 <span>Withdraw Chips</span>
-                {panel?.withdrawableBalance && (
+                {panel?.withdrawableBalance !== undefined && (
                   <p className="normal-case tracking-normal text-[0.65rem] text-white/50">
                     Only ETH-purchased chips can be withdrawn (not free promo chips).
                   </p>
@@ -304,12 +300,12 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
                     onChange={(event) => setWithdrawValue(event.target.value)}
                     placeholder="Withdraw chips"
                     className="bg-black/40 text-white"
-                    disabled={!panel?.onWithdrawChips || disablePanelActions}
+                    disabled={!panel?.onWithdrawChips || disableEconomyActions}
                   />
                   <Button
                     type="submit"
                     variant="secondary"
-                    disabled={!panel?.onWithdrawChips || disablePanelActions}
+                    disabled={!panel?.onWithdrawChips || disableEconomyActions}
                     className="sm:w-auto"
                   >
                     {panel?.onWithdrawChips ? 'Withdraw' : 'Disabled'}
@@ -322,9 +318,9 @@ export const WalletControls = ({ panel }: WalletControlsProps) => {
               <Button
                 onClick={handleClaimFreeChips}
                 className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
-                disabled={panel.hasClaimedFreeChips || disablePanelActions}
+                disabled={panel.hasClaimedFreeChips !== false || disablePanelActions}
               >
-                {panel.hasClaimedFreeChips ? 'Already Claimed' : isClaiming ? 'Claiming…' : 'Claim Free Chips'}
+                {claimButtonLabel}
               </Button>
             )}
 

@@ -889,14 +889,9 @@ const playerHandSignature = useMemo(() => {
           if (!cancelled) {
             if (playerDecryptErrorRef.current !== currentHandSignature) {
               playerDecryptErrorRef.current = currentHandSignature;
-              const rateLimited = isRateLimitError(fetchError);
-              const authIssue = isAuthError(fetchError);
-              const description = authIssue
-                ? 'Your RPC endpoint rejected the request. Add an authenticated URL (API key) to VITE_SEPOLIA_RPC_URL and reconnect.'
-                : rateLimited
-                  ? 'RPC provider rate-limited handle fetches. Waiting before retrying automatically.'
-                  : 'Could not fetch your encrypted card handles from the contract. Check your RPC connection and try again.';
-              toast.error('Encrypted cards unavailable', { description });
+              toast.error('Could not load your cards', {
+                description: 'Check your connection and try again.'
+              });
             }
             failedPlayerHandSignatureRef.current = currentHandSignature;
             setPlayerDecryptState('error');
@@ -987,7 +982,7 @@ const playerHandSignature = useMemo(() => {
           devWarn('[BlackjackGame] No signing provider available for decryption');
           playerDecryptErrorRef.current = currentHandSignature;
           toast.error('Wallet approval required', {
-            description: 'Reconnect your wallet to approve the encryption key before cards can be revealed.'
+            description: 'Reconnect your wallet and approve the prompt to view your cards.'
           });
           setPlayerDecryptState('error');
           lastPlayerDecryptErrorAtRef.current = Date.now();
@@ -1107,17 +1102,9 @@ const playerHandSignature = useMemo(() => {
           }
           if (playerDecryptErrorRef.current !== playerHandSignature) {
             playerDecryptErrorRef.current = playerHandSignature;
-            const rateLimited = isRateLimitError(error);
-            const authIssue = isAuthError(error);
-            const networkIssue = isNetworkLikeError(error);
-            const description = authIssue
-              ? 'The relayer call was rejected. Update your RPC credentials or pick a provider that allows eth_call.'
-              : rateLimited
-                ? 'RPC provider rate-limited the decryption request. Waiting before retrying automatically.'
-                : networkIssue
-                  ? 'Unable to reach the decryption relayer. Please ensure your network connection is stable and try again.'
-                  : 'Use the retry control once you have approved the signature request.';
-            toast.error('Card decryption failed', { description });
+            toast.error('Could not reveal your cards', {
+              description: 'Approve the wallet prompt if asked, then try again.'
+            });
           }
           devWarn('[BlackjackGame] Player decrypt failed', {
             tableId: tableId.toString(),
@@ -1288,12 +1275,9 @@ const playerHandSignature = useMemo(() => {
           if (!cancelled) {
             if (dealerDecryptErrorRef.current !== latestResultTimestamp) {
               dealerDecryptErrorRef.current = latestResultTimestamp;
-              const rateLimited = isRateLimitError(fetchError);
-              const authIssue = isAuthError(fetchError);
-              const description = rateLimited || authIssue
-                ? 'RPC is busy — waiting before retrying dealer reveal.'
-                : 'Could not load dealer encrypted cards from the contract. Check the RPC connection and try again.';
-              toast.error('Dealer reveal unavailable', { description });
+              toast.error('Could not reveal dealer cards', {
+                description: 'Check your connection and try again.'
+              });
             }
             setDealerDecryptState('error');
             lastDealerDecryptErrorAtRef.current = Date.now();
@@ -1432,15 +1416,9 @@ const playerHandSignature = useMemo(() => {
           }
           if (dealerDecryptErrorRef.current !== latestResultTimestamp) {
             dealerDecryptErrorRef.current = latestResultTimestamp;
-            const rateLimited = isRateLimitError(error);
-            const isNetworkIssue =
-              rateLimited || isNetworkLikeError(error) || /relayer|gateway/i.test(errorMessage.toLowerCase());
-            const description = rateLimited
-              ? 'RPC is busy — pausing before the next dealer reveal attempt.'
-              : isNetworkIssue
-                ? 'Unable to reach the dealer decryption service. Retry shortly.'
-                : 'Use Retry reveal or force-advance if the table is stuck.';
-            toast.error('Dealer reveal failed', { description });
+            toast.error('Could not reveal dealer cards', {
+              description: 'Check your connection and try again.'
+            });
           }
           setDealerDecryptState('error');
           lastDealerDecryptErrorAtRef.current = Date.now();
@@ -2161,9 +2139,17 @@ const playerHandSignature = useMemo(() => {
   // Public actions – guard against acting mid-showdown and surface UX feedback.
   const actions = useMemo(
     () => ({
-      claimFreeChips: async () => (
-        execute({ functionName: 'claimFreeChips', args: [] }, 'Free chips claimed', 'all')
-      ),
+      claimFreeChips: async () => {
+        if (hasClaimed === undefined) {
+          toast.info('Checking claim status — try again in a moment.');
+          return false;
+        }
+        if (hasClaimed) {
+          toast.info('You have already claimed your free chips.');
+          return false;
+        }
+        return execute({ functionName: 'claimFreeChips', args: [] }, 'Free chips claimed', 'all');
+      },
       buyChips: async (weiAmount: bigint) => {
         if (weiAmount <= 0n) {
           toast.error('Send a positive amount of ETH to buy chips.');
@@ -2321,7 +2307,8 @@ const playerHandSignature = useMemo(() => {
       table,
       tableId,
       walletAddress,
-      walletChipBalance
+      walletChipBalance,
+      hasClaimed
     ]
   );
 

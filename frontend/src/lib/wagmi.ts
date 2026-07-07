@@ -13,7 +13,7 @@ const runtimeIcon = import.meta.env.VITE_APP_ICON_URL ?? 'https://cipherjack.xyz
 
 const walletConnectMetadata = {
   name: 'CipherJack Blackjack',
-  description: 'Private blackjack with real chip wagers.',
+  description: 'Encrypted blackjack on Sepolia — powered by Zama fhEVM.',
   url: runtimeUrl,
   icons: [runtimeIcon],
   redirect: {

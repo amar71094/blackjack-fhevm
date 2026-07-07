@@ -12,6 +12,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog';
 import { GameRulesButton } from '@/components/blackjack/GameRulesButton';
+import { FREE_CHIP_GRANT } from '@/lib/gameConstants';
 import logo from '@/assets/cipherjack-logo.jpeg';
 
 interface SiteHeaderProps {
@@ -55,7 +56,7 @@ export const SiteHeader = ({ playerTableId, tablePhase, walletPanel }: SiteHeade
     return {
       ...walletPanel,
       pending: Boolean(walletPanel.pending || isClaiming),
-      hasClaimedFreeChips: (walletPanel.hasClaimedFreeChips ?? false) || claimedOverride
+      hasClaimedFreeChips: claimedOverride ? true : walletPanel.hasClaimedFreeChips
     };
   }, [walletPanel, isClaiming, claimedOverride]);
 
@@ -63,6 +64,19 @@ export const SiteHeader = ({ playerTableId, tablePhase, walletPanel }: SiteHeade
     () => Boolean(mergedPanel?.pending),
     [mergedPanel?.pending]
   );
+
+  const claimButtonDisabled = useMemo(() => {
+    if (claimedOverride) return true;
+    if (walletPanel?.hasClaimedFreeChips === undefined) return true;
+    return Boolean(walletPanel.hasClaimedFreeChips || disableWalletActions);
+  }, [claimedOverride, walletPanel, disableWalletActions]);
+
+  const claimButtonLabel = useMemo(() => {
+    if (claimedOverride || walletPanel?.hasClaimedFreeChips === true) return 'Already Claimed';
+    if (walletPanel?.hasClaimedFreeChips === undefined) return 'Checking…';
+    if (isClaiming) return 'Claiming…';
+    return 'Claim Free Chips';
+  }, [claimedOverride, isClaiming, walletPanel?.hasClaimedFreeChips]);
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/90 backdrop-blur">
@@ -75,7 +89,7 @@ export const SiteHeader = ({ playerTableId, tablePhase, walletPanel }: SiteHeade
               </div>
               <div className="flex flex-col">
                 <span className="text-[0.65rem] uppercase tracking-[0.45em] text-primary/70">CipherJack</span>
-                <span className="text-base font-semibold text-white">Private Blackjack</span>
+                <span className="text-base font-semibold text-white">Encrypted Blackjack</span>
               </div>
             </Link>
             {playerTableId && (
@@ -97,7 +111,8 @@ export const SiteHeader = ({ playerTableId, tablePhase, walletPanel }: SiteHeade
               <DialogHeader>
                 <DialogTitle>Claim Your Starter Chips</DialogTitle>
                 <DialogDescription className="text-white/70">
-                  Grab a complimentary stack of chips to join the action instantly.
+                  Claim {FREE_CHIP_GRANT.toLocaleString()} free promo chips to start playing on Sepolia.
+                  Promo chips are for play only and cannot be withdrawn.
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
@@ -111,9 +126,9 @@ export const SiteHeader = ({ playerTableId, tablePhase, walletPanel }: SiteHeade
                 <Button
                   onClick={handleClaimClick}
                   className="sm:w-auto"
-                  disabled={((walletPanel.hasClaimedFreeChips ?? false) || claimedOverride) || disableWalletActions}
+                  disabled={claimButtonDisabled}
                 >
-                  {isClaiming ? 'Claiming…' : 'Claim Free Chips'}
+                  {claimButtonLabel}
                 </Button>
               </DialogFooter>
             </DialogContent>

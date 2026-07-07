@@ -324,6 +324,10 @@ export const useBlackjackLobby = (): BlackjackLobbyData => {
         return execute('leaveTable', [playerTableId] as const, undefined, 'Left current table');
       },
       claimFreeChips: async () => {
+        if (hasClaimedFreeChips === undefined) {
+          toast.info('Checking claim status — try again in a moment.');
+          return false;
+        }
         if (hasClaimedFreeChips) {
           toast.info('You have already claimed your free chips.');
           return false;

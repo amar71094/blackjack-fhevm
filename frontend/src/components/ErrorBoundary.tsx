@@ -23,7 +23,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     if (this.state.hasError) {
       return (
         <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background px-6 text-center">
-          <h1 className="text-2xl font-bold text-foreground">Something went wrong</h1>
+          <h1 className="text-2xl font-bold text-foreground">CipherJack hit a snag</h1>
           <p className="max-w-md text-sm text-muted-foreground">
             Try reloading the page. If the issue continues, reconnect your wallet and try again.
           </p>

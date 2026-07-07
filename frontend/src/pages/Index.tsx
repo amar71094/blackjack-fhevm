@@ -20,11 +20,13 @@ import { formatChips } from '@/utils/contractMapping';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { SiteFooter } from '@/components/layout/SiteFooter';
+import { TestnetBanner } from '@/components/layout/TestnetBanner';
 import { BankHealthBanner } from '@/components/blackjack/BankHealthBanner';
+import { FREE_CHIP_GRANT, MAX_TABLE_PLAYERS } from '@/lib/gameConstants';
 import { useAccount } from 'wagmi';
 import { parseEther } from 'viem';
 
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS = MAX_TABLE_PLAYERS;
 
 const parseChipAmount = (value: string): bigint | null => {
   try {
@@ -108,7 +110,10 @@ const Index = () => {
     return playerTableId !== joinTableId;
   }, [playerTableId, joinTableId]);
 
-  const walletBalanceDisplay = useMemo(() => formatChips(walletChips ?? 0n), [walletChips]);
+  const walletBalanceDisplay = useMemo(
+    () => (walletChips !== undefined ? formatChips(walletChips) : undefined),
+    [walletChips]
+  );
   const withdrawableDisplay = useMemo(
     () => (withdrawableChips !== undefined ? formatChips(withdrawableChips) : undefined),
     [withdrawableChips]
@@ -175,7 +180,7 @@ const Index = () => {
   const handleLeaveCurrentTable = async () => {
     const left = await actions.leaveCurrentTable();
     if (left) {
-      toast.success('You left your current table. Enter a buy-in to join this lounge.');
+      toast.success('You left your current table. Enter a buy-in to join this table.');
     }
   };
 
@@ -200,17 +205,20 @@ const Index = () => {
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(10,23,36,0.65),rgba(5,12,24,0.92))]" />
       <main className="relative mx-auto flex w-full max-w-6xl flex-col gap-10 px-4 py-16 sm:px-6 lg:px-8">
         <SiteHeader playerTableId={playerTableId} tablePhase={currentTable?.phase} walletPanel={headerWalletPanel} />
+        <TestnetBanner />
         <BankHealthBanner />
         <section className="grid gap-10 lg:grid-cols-[minmax(0,1.05fr),380px]">
           <div className="space-y-6">
-            <Badge variant="secondary" className="bg-primary/20 text-primary-foreground/90">
-              Private Hands, Real Stakes
-            </Badge>
-            <h1 className="text-4xl font-black tracking-tight text-white sm:text-5xl lg:text-6xl">
-              CipherJack: Private Blackjack on the Blockchain
+            {/* <Badge variant="secondary" className="bg-primary/20 text-primary-foreground/90">
+              Zama fhEVM · Sepolia Testnet
+            </Badge> */}
+            <h1 className="text-3xl font-black tracking-tight text-white sm:text-4xl lg:text-5xl">
+              CipherJack: World's First FHE-Powered Blackjack
             </h1>
             <p className="max-w-2xl text-base text-white/80 sm:text-lg">
-              Play blackjack with private hands, real chip wagers, and instant settlement. Only you can see your cards until the showdown.
+              Play blackjack on Sepolia with on-chain chips and encrypted card hands. Built on Zama
+              fhEVM — only your wallet can decrypt your cards. Bets and payouts settle automatically
+              on-chain.
             </p>
             <div className="flex flex-wrap gap-3">
               <Button
@@ -235,21 +243,24 @@ const Index = () => {
                 Create Table
               </Button>
             </div>
+            {!walletConnected && (
+              <p className="text-sm text-white/55">Connect your wallet on Sepolia to play.</p>
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
               <LobbyFeature
                 icon={ShieldCheck}
-                title="Private Hands"
-                description="Your cards stay hidden from other players. Only your wallet can reveal them to you."
+                title="Encrypted On-Chain Hands"
+                description="Card ranks and suits are encrypted on-chain with Zama fhEVM. Only your wallet can decrypt your hand."
               />
               <LobbyFeature
                 icon={Zap}
-                title="Real-Time Play"
-                description="Smooth, live gameplay with instant table updates and fast turn progression."
+                title="Live Table Play"
+                description="Multiplayer blackjack with on-chain turns, encrypted deals, and automatic hand settlement."
               />
               <LobbyFeature
                 icon={Cpu}
-                title="Fair Settlement"
-                description="Every wager and payout is settled automatically — no house account holding your chips."
+                title="On-Chain Settlement"
+                description="Every wager and payout is enforced by the smart contract on Sepolia — transparent and automatic."
               />
             </div>
           </div>
@@ -259,7 +270,8 @@ const Index = () => {
                 Tables Overview
               </CardTitle>
               <p className="text-sm text-white/60">
-                Browse active CipherJack lounges and claim your seat. Buy-ins are managed with native chips and secured payouts.
+                Browse active CipherJack tables and claim your seat. Buy-ins use on-chain wallet chips
+                (claim {FREE_CHIP_GRANT.toLocaleString()} free promo chips or buy with Sepolia ETH).
               </p>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -277,7 +289,7 @@ const Index = () => {
                 )}
                 {!isLoading && tables.length === 0 && (
                   <div className="rounded-2xl border border-dashed border-primary/30 bg-black/30 p-6 text-center text-sm text-white/70">
-                    No tables yet. Be the first to deploy a private lounge.
+                    No tables yet. Be the first to create a table.
                   </div>
                 )}
                 {tables.map((table) => {
@@ -293,7 +305,7 @@ const Index = () => {
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
                             <p className="text-xs uppercase tracking-[0.4em] text-white/40">Table #{table.id.toString()}</p>
-                            <h3 className="text-lg font-semibold text-white">Cipher Lounge {table.id.toString()}</h3>
+                            <h3 className="text-lg font-semibold text-white">Table {table.id.toString()}</h3>
                           </div>
                           <TablePill label={statusPill} />
                         </div>
@@ -354,7 +366,8 @@ const Index = () => {
             <div>
               <h2 className="text-2xl font-semibold text-white">Why CipherJack?</h2>
               <p className="text-sm text-white/70">
-                A luxury blackjack experience with private hands, cinematic UI, and instant chip settlement.
+                A polished blackjack experience with encrypted private hands, cinematic UI, and
+                automatic on-chain chip settlement.
               </p>
             </div>
             <Button
@@ -372,15 +385,17 @@ const Index = () => {
                 <CardTitle className="text-lg text-white">Private Hands</CardTitle>
               </CardHeader>
               <CardContent className="text-sm text-white/70">
-                Your cards stay hidden from other players until the showdown. Hand values remain private throughout each round.
+                Your card faces stay encrypted on-chain. Other players cannot see your hand values —
+                only your wallet can decrypt your cards for you.
               </CardContent>
             </Card>
             <Card className="border-primary/20 bg-black/40">
               <CardHeader>
-                <CardTitle className="text-lg text-white">Non-Custodial Chips</CardTitle>
+                <CardTitle className="text-lg text-white">Wallet Chips</CardTitle>
               </CardHeader>
               <CardContent className="text-sm text-white/70">
-                Acquire chips with ETH, keep unused chips in your wallet, and cash out instantly. No centralized treasury.
+                Claim {FREE_CHIP_GRANT.toLocaleString()} free promo chips once, or buy more with Sepolia
+                test ETH. Chips live in your wallet on-chain; only ETH-purchased chips can be withdrawn.
               </CardContent>
             </Card>
             <Card className="border-primary/20 bg-black/40">
@@ -388,7 +403,18 @@ const Index = () => {
                 <CardTitle className="text-lg text-white">Live Spectator Mode</CardTitle>
               </CardHeader>
               <CardContent className="text-sm text-white/70">
-                Follow tables in real time with transparent pot data, wagers, and results while respecting player privacy.
+                Follow tables in real time. Pots, wagers, and results are public; player card faces stay
+                encrypted until revealed.
+              </CardContent>
+            </Card>
+            <Card className="border-primary/20 bg-black/40 md:col-span-2 xl:col-span-1">
+              <CardHeader>
+                <CardTitle className="text-lg text-white">Powered by Zama fhEVM</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-white/70">
+                CipherJack stores encrypted card handles on Sepolia using Zama&apos;s fully homomorphic
+                encryption. Game logic and payouts remain on-chain while card privacy is preserved
+                during play.
               </CardContent>
             </Card>
           </div>
@@ -450,7 +476,7 @@ const Index = () => {
             {isSwitchingTable && playerTableId ? (
               <div className="space-y-4 text-sm text-white/80">
                 <p>
-                  You are currently seated at Table #{playerTableId.toString()}. Leave that table before joining this lounge.
+                  You are currently seated at Table #{playerTableId.toString()}. Leave that table before joining this one.
                 </p>
                 <Button
                   variant="outline"
@@ -495,7 +521,8 @@ const Index = () => {
                   />
                   {walletChips !== undefined && walletChips === 0n && (
                     <p className="text-xs text-amber-300/90">
-                      Your wallet has 0 chips. Claim free chips from the wallet panel before joining.
+                      Your wallet has 0 chips. Claim {FREE_CHIP_GRANT.toLocaleString()} free promo chips
+                      from the wallet panel, or buy chips with Sepolia test ETH.
                     </p>
                   )}
                 </div>
