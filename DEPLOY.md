@@ -2,6 +2,11 @@
 
 Use this checklist before demo filming or Zama Builder Track submission.
 
+**Live deployment:** [https://cipherjack.xyz](https://cipherjack.xyz)  
+**Contract (Sepolia):** [`0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B`](https://sepolia.etherscan.io/address/0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B)  
+**Deployer / gameOracle:** `0x86d9AB7C8A915DBf9dd2C2ba533d10bdb87801D6`  
+**Deployed:** 2026-07-07 · Bank funded: 0.05 ETH
+
 ## 1. Deploy contract
 
 ```bash

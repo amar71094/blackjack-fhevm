@@ -1,72 +1,118 @@
-# CipherJack Blackjack
+# CipherJack Frontend
 
-CipherJack is an on-chain blackjack table that keeps every card encrypted with fully homomorphic encryption (FHE) until it is safe to reveal. The experience combines a polished UI, responsive chip animations, and wallet-first gameplay for both desktop and mobile (WalletConnect) players.
+React client for [CipherJack](https://cipherjack.xyz) — encrypted multiplayer blackjack on Sepolia, powered by Zama fhEVM.
+
+**Live:** [https://cipherjack.xyz](https://cipherjack.xyz)  
+**Contract:** [`0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B`](https://sepolia.etherscan.io/address/0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B) (Sepolia)  
+**Monorepo docs:** [../README.md](../README.md) · [../DEPLOY.md](../DEPLOY.md)
 
 ## Features
 
-- FHE-backed blackjack: cards are dealt and decrypted with user-approved signatures.
-- WalletConnect and injected-wallet support, including mobile-friendly flows.
-- Responsive table that scales up to four players with celebration overlays and chip animations.
-- Built-in safeguards such as the **Force** action for stalled turns and clear status messaging when network services are unavailable.
+- **FHE user-decrypt** for your live hand; public decrypt for dealer cards at showdown
+- **WalletConnect + injected wallets** (MetaMask, etc.) via wagmi
+- **Lobby** — browse tables, create tables, claim free chips, buy/withdraw chips
+- **Live table** — up to 4 players, chip animations, turn timer, showdown overlays
+- **Spectator mode** — watch a table without being seated
+- **Table activity** — last 100 hands per table (via oracle activity API)
+- **Bank health banner** — warns when the on-chain dealer bank is underfunded
+
+## Routes
+
+| Path | Page |
+| --- | --- |
+| `/` | Lobby — table browser, wallet panel, create/join flows |
+| `/game/:tableId` | Live blackjack table |
+| `*` | 404 → back to lobby |
 
 ## Gameplay Overview
 
-1. **Connect & Seat**  
-   Connect an EVM wallet, claim/bring chips, and join a table. All chips live on-chain.
+1. **Connect & fund** — connect on Sepolia, claim 2,000 free promo chips (or buy with test ETH)
+2. **Join a table** — set buy-in within table min/max limits
+3. **Betting** — place wager before cards are dealt
+4. **Encrypted turns** — approve the FHE signature prompt to decrypt your cards locally
+5. **Actions** — Hit, Stand, or Double (first two cards only)
+6. **Turn timer** — 60 seconds per turn; the oracle auto-stands for you on timeout
+7. **Showdown** — dealer cards reveal, payouts settle on-chain, next betting phase opens
 
-2. **Betting Phase**  
-   Enter a wager and submit it before the hand begins. The UI displays min bet, stack, and available chips.
-
-3. **Encrypted Turns**  
-   Cards are dealt encrypted. Approve the FHE signature request (desktop or WalletConnect) to decrypt your own cards locally.
-
-4. **Actions**  
-   - **Hit** – draw another encrypted card.  
-   - **Stand** – lock your current hand.  
-   - **Double** – double the wager and take exactly one more card (available on the first two cards).  
-   - **Force** – once the on-chain turn timer expires for another player, advance the round without waiting.
-
-5. **Showdown**  
-   Dealer cards decrypt publicly, payouts are calculated on-chain, and the next betting phase opens.
+Dealer hits on 16 or less and stands on 17 or more (including soft 17).
 
 ## Getting Started
 
-Install dependencies and launch the development server:
-
 ```sh
+cd frontend
+cp .env.example .env    # set VITE_BLACKJACK_CONTRACT + RPC + WalletConnect ID
 npm install
-npm run dev
+npm run dev             # http://localhost:8080
 ```
 
-The app runs on Vite (`http://localhost:8080` by default). Ensure you have the required environment variables for the blackjack contract and FHE relayer before connecting a wallet.
+The dev server sets **COOP/COEP** headers required for Zama FHE WASM. Production hosts must do the same (see `vercel.json`).
 
-### Available Scripts
+**Oracle required:** live dealing and settlement need the backend oracle running. Point `VITE_ORACLE_ACTIVITY_URL` at the oracle activity API (default `http://127.0.0.1:4001`).
 
-- `npm run dev` – start the Vite development server.
-- `npm run build` – generate an optimized production build in `dist/`.
-- `npm run preview` – preview the production build locally.
-- `npm run lint` – run ESLint to verify code quality.
+### Scripts
+
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Vite dev server on port 8080 |
+| `npm run build` | Production bundle in `dist/` |
+| `npm run preview` | Preview production build |
+| `npm run lint` | ESLint |
+
+### Environment Variables
+
+See `frontend/.env.example` and the env table in [../README.md](../README.md#-frontend).
+
+Minimum for local dev:
+
+- `VITE_BLACKJACK_CONTRACT` — deployed Blackjack address
+- `VITE_SEPOLIA_RPC_URL` — Sepolia RPC
+- `VITE_WALLETCONNECT_PROJECT_ID` — WalletConnect project ID
+- FHE addresses (defaults in `.env.example` match Zama Sepolia testnet)
 
 ## Tech Stack
 
-- React + TypeScript
-- Vite
-- Tailwind CSS & shadcn-ui
-- Wagmi + viem for wallet and contract interactions
-- TanStack Query for asynchronous state
-- Zama FHE relayer SDK for encrypted card handling
+- React 18 + TypeScript
+- Vite 5
+- Tailwind CSS + shadcn/ui
+- wagmi 2 + viem
+- TanStack Query
+- `@zama-fhe/relayer-sdk` 0.4.x
+
+## Project Structure
+
+```
+src/
+├── pages/           Index (lobby), Game, NotFound
+├── hooks/           useBlackjackLobby, useBlackjackGame
+├── components/
+│   ├── blackjack/   Table, cards, controls, rules
+│   ├── wallet/      WalletControls popover
+│   └── layout/      SiteHeader, TestnetBanner, footer
+└── lib/             wagmi config, contract writes, FHE helpers, toasts
+```
 
 ## Deployment
 
-Build the project with `npm run build` and deploy the generated `dist/` directory to your preferred static host (Vercel, Netlify, Cloudflare Pages, etc.).
+```sh
+npm run build
+```
+
+Deploy `dist/` to Vercel, Netlify, or similar. Ensure COOP/COEP headers are set (Vercel: use included `vercel.json`).
+
+Set `VITE_APP_PUBLIC_URL` to your deployed origin for WalletConnect metadata.
+
+## Troubleshooting
+
+| Issue | Fix |
+| --- | --- |
+| Cards won't decrypt | Reconnect wallet, approve FHE signature, use **Retry reveal** at showdown |
+| No cards dealt after bet | Confirm oracle is running and `gameOracle` matches oracle signer |
+| Wrong network | Switch wallet to Sepolia |
+| WASM / SharedArrayBuffer errors | Host must serve COOP/COEP headers |
+| Table activity empty | Set `VITE_ORACLE_ACTIVITY_URL` and ensure oracle HTTP API is reachable |
 
 ## Contributing
 
-1. Fork or clone the repository.
-2. Create a feature branch.
-3. Run `npm run lint` and `npm run build` before opening a PR.
-4. Submit a pull request outlining your changes.
-
-## License
-
-This project is provided as-is for internal blackjack showcase work. Adapt it for your own encrypted gaming experiments.
+1. Run `npm run lint` and `npm run build` before opening a PR
+2. Match existing component patterns and copy tone
+3. See [../README.md](../README.md) for full-stack setup
