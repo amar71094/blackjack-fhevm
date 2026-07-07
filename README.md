@@ -3,7 +3,7 @@
 CipherJack is a full multiplayer blackjack dApp on **Sepolia** where live card hands are stored as encrypted `euint8` handles on-chain. Players decrypt their own cards via the Zama relayer SDK; a signed **game oracle** shuffles, deals, and settles hands off-chain.
 
 **Live demo:** [https://cipherjack.xyz](https://cipherjack.xyz)  
-**Contract (Sepolia):** [`0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B`](https://sepolia.etherscan.io/address/0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B)  
+**Contract (Sepolia):** [`0xA47190fCBBfA397D1F7A1E461Ae4fDA36b137958`](https://sepolia.etherscan.io/address/0xA47190fCBBfA397D1F7A1E461Ae4fDA36b137958)  
 **Repository:** [https://github.com/amar71094/blackjack-fhevm](https://github.com/amar71094/blackjack-fhevm)
 
 > Sepolia testnet only — play chips, not real money. Promo chips cannot be withdrawn.

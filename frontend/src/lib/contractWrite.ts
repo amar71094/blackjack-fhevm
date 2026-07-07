@@ -32,6 +32,7 @@ const revertHints: Record<string, string> = {
   TableDNE: 'That table does not exist.',
   BettingClosed: 'Betting is closed for this hand.',
   NotYourTurn: 'Wait for your turn before acting.',
+  TableInactive: 'This table is not active. Solo play requires the latest contract — redeploy and refresh.',
   OraclePending: 'Wait for the table to finish processing the last action.',
   PlayerBustedAction: 'You busted — no further actions are needed.',
   AlreadyBet: 'You already placed a bet for this hand.',

@@ -28,6 +28,12 @@ abstract contract BlackjackGameplay is BlackjackTableMgmt {
             else if (t.players[i].chips >= t.minBuyIn && t.players[i].bet == 0) playersEligibleNoBet++;
         }
         if (activeBettors > 0 && (playersEligibleNoBet == 0 || t.players.length == 1)) {
+            // Solo tables never hit Active via joinTable (needs 2+ seats). Promote on deal start
+            // so isMyTurn does not revert TableInactive during player actions.
+            if (t.status != TableStatus.Active) {
+                t.status = TableStatus.Active;
+                emit GameStarted(tableId);
+            }
             t.phase = GamePhase.Dealing;
             t.pendingKind = PendingKind.DealHand;
             t.pendingPlayer = address(0);

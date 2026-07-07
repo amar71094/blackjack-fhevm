@@ -3,7 +3,7 @@
 React client for [CipherJack](https://cipherjack.xyz) — encrypted multiplayer blackjack on Sepolia, powered by Zama fhEVM.
 
 **Live:** [https://cipherjack.xyz](https://cipherjack.xyz)  
-**Contract:** [`0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B`](https://sepolia.etherscan.io/address/0x43d1B6dAD0194D28fD37f9310495BBf07f55F67B) (Sepolia)  
+**Contract:** [`0xA47190fCBBfA397D1F7A1E461Ae4fDA36b137958`](https://sepolia.etherscan.io/address/0xA47190fCBBfA397D1F7A1E461Ae4fDA36b137958) (Sepolia)  
 **Monorepo docs:** [../README.md](../README.md) · [../DEPLOY.md](../DEPLOY.md)
 
 ## Features

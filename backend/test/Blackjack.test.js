@@ -299,6 +299,36 @@ describe("Blackjack contract", function () {
       expect(results.length).to.equal(2);
     });
 
+    it("activates solo tables on deal so hit/stand do not revert TableInactive", async function () {
+      const { blackjack, owner, alice } = await loadFixture(deployFixture);
+      const { oracleFulfillPending } = require("./oracleHelpers");
+      const TableStatus = { Waiting: 0, Active: 1, Closed: 2 };
+
+      await blackjack.connect(owner).fundBank({ value: ethers.parseEther("1") });
+      await blackjack.connect(owner).createTable(1_000, 10_000);
+      await blackjack.connect(alice).claimFreeChips();
+      await blackjack.connect(alice).joinTable(1, 2_000);
+
+      const waiting = await blackjack.getTableSummary(1);
+      expect(Number(waiting.status)).to.equal(TableStatus.Waiting);
+
+      await expect(blackjack.connect(alice).placeBet(1, 1_000))
+        .to.emit(blackjack, "GameStarted")
+        .withArgs(1);
+
+      const active = await blackjack.getTableSummary(1);
+      expect(Number(active.status)).to.equal(TableStatus.Active);
+
+      await oracleFulfillPending(blackjack, owner, 1);
+
+      const play = await blackjack.getTablePlayState(1);
+      expect(Number(play.phase)).to.equal(GamePhase.PlayerTurns);
+      expect(await blackjack.isPlayerTurn(1, alice.address)).to.equal(true);
+
+      await expect(blackjack.connect(alice).hit(1))
+        .to.emit(blackjack, "OracleActionRequired");
+    });
+
     it("stores only encrypted handles in live play state (no plaintext cards)", async function () {
       const { blackjack, owner, alice, bob } = await loadFixture(fundedTableFixture);
       await blackjack.connect(alice).placeBet(1, 1_000);
@@ -509,6 +539,37 @@ describe("Blackjack contract", function () {
       await playHandToCompletion(blackjack, owner, 1, [bob]);
       const [, , results] = await blackjack.getLastHandResult(1);
       expect(results.length).to.equal(2);
+    });
+
+    it("oracleAdvanceToDealer recovers a stuck player-turn table", async function () {
+      const { blackjack, owner, alice, bob } = await loadFixture(fundedTableFixture);
+      const { oracleFulfillPending } = require("./oracleHelpers");
+
+      await blackjack.connect(alice).placeBet(1, 1_000);
+      await blackjack.connect(bob).placeBet(1, 1_000);
+      await oracleFulfillPending(blackjack, owner, 1);
+
+      await blackjack.connect(alice).stand(1);
+      await blackjack.connect(owner).oracleFulfillPending(1, [], [], "0x", [], [], 2, false);
+      await blackjack.connect(bob).stand(1);
+      await blackjack.connect(owner).oracleFulfillPending(1, [], [], "0x", [], [], 2, false);
+
+      const tableBefore = await blackjack.getTablePlayState(1);
+      expect(Number(tableBefore.pendingKind)).to.equal(5); // DealerPlay
+
+      await blackjack.connect(owner).oracleFulfillPending(1, [], [], "0x", [], [], 2, false);
+
+      const stuck = await blackjack.getTablePlayState(1);
+      expect(Number(stuck.phase)).to.equal(2); // PlayerTurns
+      expect(Number(stuck.pendingKind)).to.equal(0); // None
+      expect(await blackjack.getNextPlayer(1)).to.equal(ethers.ZeroAddress);
+
+      await expect(blackjack.connect(owner).oracleAdvanceToDealer(1))
+        .to.emit(blackjack, "OracleActionRequired")
+        .withArgs(1, 5, ethers.ZeroAddress);
+
+      const recovered = await blackjack.getTablePlayState(1);
+      expect(Number(recovered.pendingKind)).to.equal(5);
     });
 
     it("rejects non-oracle fulfillment", async function () {

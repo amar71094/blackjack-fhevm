@@ -1,4 +1,5 @@
 import { friendlyRevertMessage } from '@/lib/contractWrite';
+import { PendingKind } from '@/types/blackjackContract';
 
 const ACTION_ERROR_TITLES: Record<string, string> = {
   claimFreeChips: 'Could not claim free chips',
@@ -101,6 +102,110 @@ export function isConnectedActivePlayer(
 ): boolean {
   if (!activePlayerAddress || !connectedPlayerAddress) return false;
   return activePlayerAddress.toLowerCase() === connectedPlayerAddress.toLowerCase();
+}
+
+export interface SeatTurnBannerInput {
+  phase?: string;
+  isActiveSpot: boolean;
+  isBusted: boolean;
+  isConnectedViewer: boolean;
+  playerName: string;
+  spotPlayerAddress?: string;
+  oraclePending: boolean;
+  oraclePendingForSelf: boolean;
+  oracleConfirmingBust: boolean;
+  pendingOracleKind?: PendingKind;
+  pendingOraclePlayer?: string | null;
+}
+
+/** Seat pill above a player spot — hides "Your Turn" while oracle fulfills that action. */
+export function resolveSeatTurnBanner(input: SeatTurnBannerInput): { show: boolean; label: string } {
+  const {
+    phase,
+    isActiveSpot,
+    isBusted,
+    isConnectedViewer,
+    playerName,
+    spotPlayerAddress,
+    oraclePending,
+    oraclePendingForSelf,
+    oracleConfirmingBust,
+    pendingOracleKind,
+    pendingOraclePlayer
+  } = input;
+
+  if (phase !== 'player-turn' || !isActiveSpot || isBusted) {
+    return { show: false, label: '' };
+  }
+
+  const pendingForSpot = Boolean(
+    oraclePending &&
+      pendingOraclePlayer &&
+      spotPlayerAddress &&
+      isConnectedActivePlayer(pendingOraclePlayer, spotPlayerAddress)
+  );
+
+  if (oraclePending) {
+    if (oracleConfirmingBust && (isBusted || pendingForSpot)) {
+      return { show: true, label: TABLE_STATUS.confirmingBustBanner };
+    }
+    if (pendingOracleKind === PendingKind.DealHand) {
+      return { show: true, label: TABLE_STATUS.dealingHandBanner };
+    }
+    if (pendingOracleKind === PendingKind.DealerPlay || pendingOracleKind === PendingKind.Settle) {
+      return { show: false, label: '' };
+    }
+    if (pendingForSpot || (isConnectedViewer && oraclePendingForSelf)) {
+      return { show: true, label: TABLE_STATUS.processingBanner };
+    }
+    if (pendingOraclePlayer) {
+      return { show: true, label: TABLE_STATUS.processingBanner };
+    }
+    return { show: true, label: TABLE_STATUS.pleaseWaitBanner };
+  }
+
+  return { show: true, label: seatTurnLabel(isConnectedViewer, playerName) };
+}
+
+/** True when the connected wallet is the live actor and not blocked by oracle work. */
+export function isConnectedPlayerTurnOpen(input: {
+  phase?: string;
+  activeSpotAddress?: string;
+  connectedAddress?: string;
+  activeSpotBusted?: boolean;
+  oraclePending: boolean;
+  oraclePendingForSelf: boolean;
+  pendingOracleKind?: PendingKind;
+  pendingOraclePlayer?: string | null;
+}): boolean {
+  const {
+    phase,
+    activeSpotAddress,
+    connectedAddress,
+    activeSpotBusted,
+    oraclePending,
+    oraclePendingForSelf,
+    pendingOracleKind,
+    pendingOraclePlayer
+  } = input;
+
+  if (phase !== 'player-turn' || activeSpotBusted) return false;
+  if (!isConnectedActivePlayer(activeSpotAddress, connectedAddress)) return false;
+
+  if (!oraclePending) return true;
+
+  if (
+    pendingOracleKind === PendingKind.DealHand ||
+    pendingOracleKind === PendingKind.DealerPlay ||
+    pendingOracleKind === PendingKind.Settle
+  ) {
+    return false;
+  }
+  if (oraclePendingForSelf) return false;
+  if (pendingOraclePlayer && isConnectedActivePlayer(pendingOraclePlayer, activeSpotAddress)) {
+    return false;
+  }
+  return false;
 }
 
 export function tableProcessingHelperMessage(params: {

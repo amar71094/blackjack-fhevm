@@ -201,6 +201,7 @@ abstract contract BlackjackStorage is ZamaEthereumConfig {
     error AddrMismatch();
     error AddrCoverage();
     error NothingPending();
+    error PlayersStillActing();
     error NeedOneCard();
     error InvalidPendingKind();
     error BadDealerCount();

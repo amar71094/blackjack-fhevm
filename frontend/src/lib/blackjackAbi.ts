@@ -242,6 +242,11 @@ export const blackjackAbi = [
   },
   {
     "inputs": [],
+    "name": "PlayersStillActing",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "PromoChipsNotWithdrawable",
     "type": "error"
   },
@@ -1711,6 +1716,19 @@ export const blackjackAbi = [
       }
     ],
     "name": "leaveTable",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "tableId",
+        "type": "uint256"
+      }
+    ],
+    "name": "oracleAdvanceToDealer",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

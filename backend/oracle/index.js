@@ -617,38 +617,54 @@ async function tryAutoAdvanceTimeout(contract, tableId, signer) {
   if (now < lastActivity + timeout) return false;
 
   const waiting = play.players.filter((p) => p.bet > 0n && p.isActive && !p.hasActed && !p.busted);
-  if (waiting.length === 0) return false;
-
   const populated = await contract.forceAdvanceOnTimeout.populateTransaction(tableId);
   const tx = await sendOracleTxSerialized(signer, populated);
   await tx.wait();
-  console.log(`[oracle] auto-advanced timed-out turn table=${tableId} player=${waiting[0].addr}`);
+  if (waiting.length > 0) {
+    console.log(`[oracle] auto-advanced timed-out turn table=${tableId} player=${waiting[0].addr}`);
+  } else {
+    console.log(`[oracle] auto-advanced timed-out table=${tableId} -> DealerPlay pending`);
+  }
   return true;
 }
 
-async function recoverStuckPlayerPhase(contract, tableId) {
+async function recoverStuckPlayerPhase(contract, tableId, signer) {
   const play = await readPendingPlay(contract, tableId);
   if (play.phase !== 2 || play.pendingKind !== PendingKind.None) return false;
 
-  const waiting = play.players.filter((p) => p.bet > 0n && p.isActive && !p.hasActed);
+  const waiting = play.players.filter((p) => p.bet > 0n && p.isActive && !p.hasActed && !p.busted);
   if (waiting.length > 0) return false;
 
   const nextPlayer = await contract.getNextPlayer(tableId);
   if (nextPlayer !== ethers.ZeroAddress) return false;
 
-  console.log(
-    `[oracle] table=${tableId} waiting for dealer step — contract should emit DealerPlay pending shortly`
-  );
-  return false;
+  const hasBettor = play.players.some((p) => p.bet > 0n);
+  if (!hasBettor) return false;
+
+  if (typeof contract.oracleAdvanceToDealer === 'function') {
+    try {
+      const populated = await contract.oracleAdvanceToDealer.populateTransaction(tableId);
+      const tx = await sendOracleTxSerialized(signer, populated);
+      await tx.wait();
+      console.log(`[oracle] recovered stuck table=${tableId} -> DealerPlay pending`);
+      return true;
+    } catch (err) {
+      console.warn(
+        `[oracle] oracleAdvanceToDealer failed table=${tableId}: ${messageFromError(err)}`
+      );
+    }
+  }
+
+  return tryAutoAdvanceTimeout(contract, tableId, signer);
 }
 
 async function handlePending(contract, tableId, signer) {
   const play = await readPendingPlay(contract, tableId);
   const kind = play.pendingKind;
   if (kind === PendingKind.None) {
+    if (await recoverStuckPlayerPhase(contract, tableId, signer)) return true;
     if (await tryAutoAdvanceTimeout(contract, tableId, signer)) return true;
     await recoverSessionIfNeeded(contract, tableId, play);
-    await recoverStuckPlayerPhase(contract, tableId);
     return false;
   }
 

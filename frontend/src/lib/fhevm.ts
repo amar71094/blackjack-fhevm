@@ -68,18 +68,27 @@ export const coerceClearNumber = (value: unknown): number => {
 };
 
 /** publicDecrypt returns `{ clearValues }`; userDecrypt returns the map directly. */
+export const extractPublicDecryptClearValues = (
+  decrypted: ClearValueMap | { clearValues?: ClearValueMap }
+): ClearValueMap => {
+  const wrapped = decrypted as { clearValues?: ClearValueMap };
+  if (wrapped.clearValues && typeof wrapped.clearValues === 'object') {
+    return wrapped.clearValues;
+  }
+  return decrypted as ClearValueMap;
+};
+
 export const readClearValue = (
   decrypted: ClearValueMap | { clearValues?: ClearValueMap },
   handle: string
 ): unknown => {
   const normalized = normalizeHandleKey(handle);
-  const maps: ClearValueMap[] = [];
-  const direct = decrypted as ClearValueMap;
-  if (direct && typeof direct === 'object') maps.push(direct);
-  const wrapped = decrypted as { clearValues?: ClearValueMap };
-  if (wrapped.clearValues) maps.push(wrapped.clearValues);
+  const maps: ClearValueMap[] = [extractPublicDecryptClearValues(decrypted)];
 
   for (const map of maps) {
+    if (map[normalized] !== undefined) {
+      return map[normalized];
+    }
     for (const [key, value] of Object.entries(map)) {
       if (normalizeHandleKey(key) === normalized) {
         return value;
@@ -87,4 +96,17 @@ export const readClearValue = (
     }
   }
   return undefined;
+};
+
+/** Resolve a ciphertext handle against a public-decrypt or user-decrypt payload. */
+export const lookupDecryptedHandle = (
+  decrypted: ClearValueMap | { clearValues?: ClearValueMap },
+  handle: string
+): unknown => {
+  const hexKey = hexlifyHandle(handle);
+  const direct = decrypted as ClearValueMap;
+  if (direct && typeof direct === 'object' && direct[hexKey] !== undefined) {
+    return direct[hexKey];
+  }
+  return readClearValue(decrypted, handle);
 };

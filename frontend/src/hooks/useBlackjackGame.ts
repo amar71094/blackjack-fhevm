@@ -11,7 +11,14 @@ import { sepolia } from 'wagmi/chains';
 import { blackjackContract } from '@/lib/contracts';
 import { blackjackAbi } from '@/lib/blackjackAbi';
 import { GameState, Player, Card } from '@/types/blackjack';
-import { ContractTable, GamePhase, PendingKind, WinnerEventPayload } from '@/types/blackjackContract';
+import {
+  ContractHandResult,
+  ContractTable,
+  GamePhase,
+  PendingKind,
+  TableStatus,
+  WinnerEventPayload
+} from '@/types/blackjackContract';
 import {
   mergeTableWithHandResult,
   normalizeHandResult,
@@ -29,9 +36,10 @@ import {
 import {
   coerceClearNumber,
   ensureFhevmInstance,
+  extractPublicDecryptClearValues,
   getBrowserProvider,
   hexlifyHandle,
-  readClearValue
+  lookupDecryptedHandle
 } from '@/lib/fhevm';
 import {
   loadOrCreateSignature,
@@ -232,6 +240,18 @@ export const useBlackjackGame = (
   >({});
   const liveHandSnapshotsRef = useRef<Record<string, CachedDecryptedHand>>({});
   const lastSnapshottedResultRef = useRef(0);
+  const cachedHandResultRef = useRef<ContractHandResult | null>(null);
+  const publicClientRef = useRef(publicClient);
+  const dealerDecryptStateRef = useRef(dealerDecryptState);
+  const dealerDecryptWindowOpenRef = useRef(false);
+
+  useEffect(() => {
+    publicClientRef.current = publicClient;
+  }, [publicClient]);
+
+  useEffect(() => {
+    dealerDecryptStateRef.current = dealerDecryptState;
+  }, [dealerDecryptState]);
 
   const lowerWalletAddress = useMemo(() => toLower(walletAddress), [walletAddress]);
 
@@ -403,10 +423,8 @@ export const useBlackjackGame = (
     aggressivePollUntil
   ]);
 
-  const table = useMemo(() => {
-    if (!rawTable) return undefined;
-    const playTable = normalizePlayTable(rawTable);
-    if (!rawHandResult) return playTable;
+  const resolvedHandResult = useMemo(() => {
+    if (!rawHandResult) return cachedHandResultRef.current;
     const [dealerTotal, dealerBusted, results, pot, timestamp] = rawHandResult as readonly [
       bigint,
       boolean,
@@ -414,14 +432,28 @@ export const useBlackjackGame = (
       bigint,
       bigint
     ];
-    return mergeTableWithHandResult(playTable, normalizeHandResult({
+    const normalized = normalizeHandResult({
       dealerTotal,
       dealerBusted,
       results,
       pot,
       timestamp
-    }));
-  }, [rawTable, rawHandResult]);
+    });
+    if (Number(normalized.timestamp) > 0) {
+      cachedHandResultRef.current = normalized;
+    }
+    return normalized;
+  }, [rawHandResult]);
+
+  const table = useMemo(() => {
+    if (!rawTable) return undefined;
+    const playTable = normalizePlayTable(rawTable);
+    const hand = resolvedHandResult ?? cachedHandResultRef.current;
+    if (hand && Number(hand.timestamp) > 0) {
+      return mergeTableWithHandResult(playTable, hand);
+    }
+    return playTable;
+  }, [rawTable, resolvedHandResult]);
 
   const baseGameState = useMemo(() => {
     if (!table) return undefined;
@@ -584,7 +616,7 @@ const playerHandSignature = useMemo(() => {
     return map;
   }, [table, decryptedHands, handSnapshotCache, latestResultTimestamp]);
 
-  const dealerHandForLastResult = useMemo(() => {
+  const resolvedDealerHandForLastResult = useMemo(() => {
     if (latestResultTimestamp === 0) return null;
     const cached = dealerHandByTimestamp[latestResultTimestamp];
     if (cached) return cached;
@@ -610,7 +642,7 @@ const playerHandSignature = useMemo(() => {
       Number(table.id),
       table.lastHandResult,
       lookup,
-      dealerHandForLastResult?.cards
+      resolvedDealerHandForLastResult?.cards
     );
     if (summary) return summary;
 
@@ -619,7 +651,7 @@ const playerHandSignature = useMemo(() => {
     }
 
     return null;
-  }, [table, baseGameState, dealerHandForLastResult]);
+  }, [table, baseGameState, resolvedDealerHandForLastResult]);
 
   const betweenHands = useMemo(() => {
     if (baseGameState) {
@@ -645,20 +677,35 @@ const playerHandSignature = useMemo(() => {
     return false;
   }, [baseGameState?.phase, table]);
 
+  // Only surface last-hand dealer cards while reviewing that hand — not during the next live round.
+  const reviewingLastHand = awaitingNextHand || isShowdownPhase;
+
+  const dealerHandForLastResult = useMemo(() => {
+    if (!reviewingLastHand) return null;
+    return resolvedDealerHandForLastResult;
+  }, [reviewingLastHand, resolvedDealerHandForLastResult]);
+
   const hasStoredHandResult = useMemo(() => {
     if (!table?.lastHandResult) return false;
     return Number(table.lastHandResult.timestamp ?? 0n) > 0;
   }, [table?.lastHandResult]);
 
+  // Decrypt once last-hand handles exist (post-settle). Close after the player acknowledges.
   const dealerDecryptWindowOpen = useMemo(
-    () =>
-      awaitingNextHand ||
-      isShowdownPhase ||
-      betweenHands ||
-      baseGameState?.phase === 'dealer-turn' ||
-      Boolean(rawShowdownSummary),
-    [awaitingNextHand, isShowdownPhase, betweenHands, baseGameState?.phase, rawShowdownSummary]
+    () => reviewingLastHand || baseGameState?.phase === 'dealer-turn',
+    [reviewingLastHand, baseGameState?.phase]
   );
+
+  useEffect(() => {
+    dealerDecryptWindowOpenRef.current = dealerDecryptWindowOpen;
+  }, [dealerDecryptWindowOpen]);
+
+  useEffect(() => {
+    if (dealerDecryptWindowOpen) return;
+    // Let an in-flight relayer public-decrypt finish and apply even if phase flips.
+    if (dealerDecryptInFlightRef.current !== null || dealerDecryptPromiseRef.current) return;
+    setDealerDecryptState((prev) => (prev === 'pending' ? 'idle' : prev));
+  }, [dealerDecryptWindowOpen]);
 
   const isDealerResultCurrent = useCallback(
     (resultTimestamp: number) =>
@@ -667,12 +714,20 @@ const playerHandSignature = useMemo(() => {
   );
 
   useEffect(() => {
+    if (!dealerDecryptWindowOpen) return;
     if (latestResultTimestamp === 0 || !hasStoredHandResult) return;
     if (dealerHandByTimestamp[latestResultTimestamp]) return;
     if (dealerPublicHand && lastDealerResultTimestampRef.current === latestResultTimestamp) return;
     if (dealerDecryptBlockedRef.current) return;
     setDealerDecryptState((prev) => (prev === 'pending' ? prev : 'pending'));
-  }, [latestResultTimestamp, hasStoredHandResult, dealerHandByTimestamp, dealerPublicHand]);
+  }, [
+    dealerDecryptWindowOpen,
+    latestResultTimestamp,
+    hasStoredHandResult,
+    dealerHandByTimestamp,
+    dealerPublicHand,
+    publicClient
+  ]);
 
   // Only surface the showdown summary while we are paused between hands.
   const showdownResult = useMemo(() => {
@@ -1206,6 +1261,7 @@ const playerHandSignature = useMemo(() => {
       handleSignature: string | null
     ) => {
       if (!isDealerResultCurrent(resultTimestamp)) return;
+      if (!hasRevealedCards(revealed.cards)) return;
       setDealerPublicHand(revealed);
       setDealerHandByTimestamp((prev) => ({
         ...prev,
@@ -1228,10 +1284,26 @@ const playerHandSignature = useMemo(() => {
       }
     };
 
+    const restoreDealerRevealFromCache = (
+      resultTimestamp: number,
+      handleSignature: string | null
+    ): boolean => {
+      if (!handleSignature || !isDealerResultCurrent(resultTimestamp)) return false;
+      const cached = dealerDecryptCacheRef.current.get(handleSignature);
+      if (!cached || !hasRevealedCards(cached.cards)) return false;
+      applyDealerReveal(
+        resultTimestamp,
+        { cards: cached.cards.map((card) => ({ ...card })), total: cached.total },
+        handleSignature
+      );
+      return true;
+    };
+
     const run = async (resultTimestamp: number) => {
       let scheduledDealerRetry = false;
+      const activePublicClient = publicClientRef.current;
 
-      if (dealerDecryptState !== 'pending') {
+      if (dealerDecryptStateRef.current !== 'pending') {
         resetPending();
         clearRetryTimer();
         return;
@@ -1243,7 +1315,7 @@ const playerHandSignature = useMemo(() => {
         return;
       }
 
-      if (!contractAddress || !publicClient || resultTimestamp === 0) {
+      if (!contractAddress || resultTimestamp === 0) {
         clearRetryTimer();
         resetPending();
         if (!isDealerResultCurrent(resultTimestamp)) return;
@@ -1255,20 +1327,34 @@ const playerHandSignature = useMemo(() => {
         return;
       }
 
-      if (!dealerDecryptWindowOpen) {
+      if (!activePublicClient) {
+        resetPending();
+        scheduledDealerRetry = true;
+        retryTimer = setTimeout(() => {
+          if (!isDealerResultCurrent(resultTimestamp)) return;
+          void run(resultTimestamp);
+        }, HANDLE_RETRY_DELAY_MS);
         return;
       }
 
       if (
         lastDealerResultTimestampRef.current === resultTimestamp &&
-        dealerDecryptState !== 'error'
+        dealerDecryptStateRef.current !== 'error'
       ) {
-        resetPending();
-        clearRetryTimer();
-        if (dealerDecryptState !== 'success') {
-          setDealerDecryptState('success');
+        const signature = lastDealerHandleSignatureRef.current;
+        if (restoreDealerRevealFromCache(resultTimestamp, signature)) {
+          resetPending();
+          clearRetryTimer();
+          return;
         }
-        return;
+        if (dealerDecryptStateRef.current !== 'success') {
+          lastDealerResultTimestampRef.current = 0;
+          lastDealerHandleSignatureRef.current = null;
+        } else {
+          resetPending();
+          clearRetryTimer();
+          return;
+        }
       }
 
       if (dealerDecryptInFlightRef.current === resultTimestamp && dealerDecryptPromiseRef.current) {
@@ -1292,7 +1378,7 @@ const playerHandSignature = useMemo(() => {
           if (!isDealerResultCurrent(resultTimestamp)) return;
 
           try {
-            const response = await publicClient.readContract({
+            const response = await activePublicClient.readContract({
               ...blackjackContract,
               functionName: 'getLastDealerEncryptedHandles',
               args: [tableId] as const
@@ -1356,15 +1442,17 @@ const playerHandSignature = useMemo(() => {
 
       if (handleSignature) {
         if (handleSignature === lastDealerHandleSignatureRef.current && isDealerResultCurrent(resultTimestamp)) {
-          lastDealerResultTimestampRef.current = resultTimestamp;
-          resetPending();
-          setDealerDecryptState('success');
-          dealerDecryptBlockedRef.current = false;
-          return;
+          if (restoreDealerRevealFromCache(resultTimestamp, handleSignature)) {
+            resetPending();
+            clearRetryTimer();
+            return;
+          }
+          lastDealerHandleSignatureRef.current = null;
+          lastDealerResultTimestampRef.current = 0;
         }
 
         const cached = dealerDecryptCacheRef.current.get(handleSignature);
-        if (cached) {
+        if (cached && hasRevealedCards(cached.cards)) {
           applyDealerReveal(
             resultTimestamp,
             { cards: cached.cards.map((card) => ({ ...card })), total: cached.total },
@@ -1376,6 +1464,11 @@ const playerHandSignature = useMemo(() => {
         }
       }
 
+      if (!dealerDecryptWindowOpenRef.current) {
+        resetPending();
+        return;
+      }
+
       try {
         const fhe = await ensureFhevmInstance();
         const rankHex = rankHandles.map((handle) => hexlifyHandle(handle));
@@ -1384,8 +1477,13 @@ const playerHandSignature = useMemo(() => {
 
         if (!isDealerResultCurrent(resultTimestamp)) return;
 
-        const ranks = rankHex.map((handle) => coerceClearNumber(readClearValue(decrypted, handle)));
-        const suits = suitHex.map((handle) => coerceClearNumber(readClearValue(decrypted, handle)));
+        const clearValues = extractPublicDecryptClearValues(decrypted);
+        const ranks = rankHex.map((handle) =>
+          coerceClearNumber(lookupDecryptedHandle(clearValues, handle))
+        );
+        const suits = suitHex.map((handle) =>
+          coerceClearNumber(lookupDecryptedHandle(clearValues, handle))
+        );
 
         if (ranks.length !== suits.length) {
           throw new Error('Dealer rank/suit handle mismatch');
@@ -1486,7 +1584,6 @@ const playerHandSignature = useMemo(() => {
     };
   }, [
     contractAddress,
-    publicClient,
     tableId,
     latestResultTimestamp,
     dealerDecryptState,
@@ -1771,6 +1868,7 @@ const playerHandSignature = useMemo(() => {
     let dealerCardsRevealed = baseGameState.dealer.cardsRevealed;
 
     const dealerRevealReady = Boolean(
+      reviewingLastHand &&
       dealerPublicHand &&
       dealerRevealTimestamp === latestResultTimestamp &&
       latestResultTimestamp > 0
@@ -1800,6 +1898,7 @@ const playerHandSignature = useMemo(() => {
     } satisfies GameState;
   }, [
     awaitingNextHand,
+    reviewingLastHand,
     baseGameState,
     dealerPublicHand,
     dealerRevealTimestamp,
@@ -1898,14 +1997,37 @@ const playerHandSignature = useMemo(() => {
     return Boolean(self?.busted);
   }, [table, lowerWalletAddress]);
 
+  // Mirror _isMyTurnInternal + pendingKind guard using the same table snapshot that drives the UI.
+  const tableDerivedPlayerTurn = useMemo(() => {
+    if (!table || !lowerWalletAddress) return false;
+    if (table.status !== TableStatus.Active) return false;
+    if (table.phase !== GamePhase.PlayerTurns) return false;
+    if (Number(table.pendingKind) !== PendingKind.None) return false;
+    const waiting = table.players.find(
+      (player) => player.isActive && !player.hasActed && !player.busted
+    );
+    return waiting?.addr.toLowerCase() === lowerWalletAddress;
+  }, [table, lowerWalletAddress]);
+
   const effectivePlayerTurn = useMemo(() => {
-    if (!playerTurn) return false;
+    const canAct = table ? tableDerivedPlayerTurn : Boolean(playerTurn);
+    if (!canAct) return false;
     if (connectedPlayer?.bust) return false;
     if (chainSelfBusted) return false;
     return true;
-  }, [playerTurn, connectedPlayer?.bust, chainSelfBusted]);
+  }, [table, tableDerivedPlayerTurn, playerTurn, connectedPlayer?.bust, chainSelfBusted]);
+
+  useEffect(() => {
+    if (!table || table.phase !== GamePhase.PlayerTurns) return;
+    if (Number(table.pendingKind) !== PendingKind.None) return;
+    void refetchTurnStatus();
+  }, [table?.phase, table?.pendingKind, tableDerivedPlayerTurn, refetchTurnStatus]);
 
   const guardPlayerAction = useCallback((): boolean => {
+    if (table && table.status !== TableStatus.Active) {
+      toast.error('This table is not active yet. Wait for another player or place a new bet after redeploy.');
+      return false;
+    }
     if (connectedPlayer?.bust || chainSelfBusted) {
       toast.info('You busted — the table advances automatically.');
       return false;
@@ -1925,6 +2047,7 @@ const playerHandSignature = useMemo(() => {
     }
     return true;
   }, [
+    table,
     chainSelfBusted,
     connectedPlayer?.bust,
     effectivePlayerTurn,
@@ -2334,6 +2457,8 @@ const playerHandSignature = useMemo(() => {
         if (latestResultTimestamp === 0) return;
         setAcknowledgedResultTimestamp(latestResultTimestamp);
         setWinners(null);
+        setDealerRevealTimestamp(0);
+        setDealerDecryptState('idle');
       },
       retryPlayerDecrypt: () => retryPlayerDecrypt(),
       retryDealerDecrypt: () => retryDealerDecrypt(),

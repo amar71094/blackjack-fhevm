@@ -251,6 +251,25 @@ abstract contract BlackjackOracle is BlackjackGameplay {
         _resetHand(tableId);
     }
 
+    /// @dev Re-queue dealer play when the table is stuck in PlayerTurns with no pending oracle action.
+    function oracleAdvanceToDealer(uint tableId) external onlyOracle {
+        Table storage t = _getTable(tableId);
+        if (t.phase != GamePhase.PlayerTurns) revert NotPlayerPhase();
+        if (t.pendingKind != PendingKind.None) revert OraclePending();
+        if (_nextPlayerAddr(tableId) != address(0)) revert PlayersStillActing();
+
+        uint activeBettors;
+        for (uint i = 0; i < t.players.length; i++) {
+            if (t.players[i].bet > 0) activeBettors++;
+        }
+        if (activeBettors == 0) revert NoPlayers();
+
+        t.pendingKind = PendingKind.DealerPlay;
+        t.pendingPlayer = address(0);
+        emit OracleActionRequired(tableId, PendingKind.DealerPlay, address(0));
+        t.lastActivityTimestamp = block.timestamp;
+    }
+
     function _resolveBustedPending(uint tableId, Table storage t) private {
         address player = t.pendingPlayer;
         Player storage actor = _getPlayerAtTable(tableId, player);

@@ -22,6 +22,7 @@ interface PlayerSpotProps {
   onRetryDecrypt?: () => void;
   isConnected?: boolean;
   decryptedHand?: { cards: Card[]; total: number };
+  seatBanner?: { show: boolean; label: string };
 }
 
 const resultStyles: Record<Exclude<Player['result'], null>, { label: string; className: string }> = {
@@ -44,7 +45,8 @@ export const PlayerSpot = ({
   decryptState,
   onRetryDecrypt,
   isConnected = false,
-  decryptedHand
+  decryptedHand,
+  seatBanner
 }: PlayerSpotProps) => {
   if (!player) {
     return (
@@ -109,8 +111,11 @@ export const PlayerSpot = ({
     chipMotion = isWinner ? 'return' : dealerWins ? 'idle' : 'idle';
   }
 
-  const showTurnBanner = Boolean(isActive && phase === 'player-turn' && !isBusted);
-  const turnLabel = seatTurnLabel(isConnected, player.name);
+  const fallbackTurnBanner = {
+    show: Boolean(isActive && phase === 'player-turn' && !isBusted),
+    label: seatTurnLabel(isConnected, player.name)
+  };
+  const { show: showTurnBanner, label: turnLabel } = seatBanner ?? fallbackTurnBanner;
 
   return (
     <div
